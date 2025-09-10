@@ -1,0 +1,14 @@
+.DS_Store
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+*.egg-info/
+.mypy_cache/
+.coverage
+htmlcov/
+traces/rag_store/
