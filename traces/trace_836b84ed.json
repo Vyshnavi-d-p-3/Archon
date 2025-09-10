@@ -1,0 +1,83 @@
+{
+  "trace_id": "836b84ed-18f4-44ee-bdfb-b89c842f95d0",
+  "task_description": "Find the population of Tokyo",
+  "model_name": "deterministic-fake",
+  "plans": [
+    {
+      "plan_id": "bea36dc1",
+      "task_description": "Find the population of Tokyo",
+      "steps": [
+        {
+          "step_id": "29783ca5",
+          "description": "Search for population of Tokyo",
+          "expected_tool": "web_search",
+          "depends_on": [],
+          "status": "completed",
+          "tool_call": {
+            "tool_name": "web_search",
+            "arguments": {
+              "query": "Tokyo population"
+            },
+            "raw_llm_output": "{\"tool\":\"web_search\",\"arguments\":{\"query\":\"Tokyo population\"}}",
+            "schema_valid": true,
+            "schema_errors": []
+          },
+          "tool_result": {
+            "success": true,
+            "output": [
+              {
+                "title": "Result 1 for: Tokyo population",
+                "url": "https://example.com/search?q=Tokyo+population&r=1",
+                "snippet": "This is a mock search result #1 for the query 'Tokyo population'."
+              },
+              {
+                "title": "Result 2 for: Tokyo population",
+                "url": "https://example.com/search?q=Tokyo+population&r=2",
+                "snippet": "This is a mock search result #2 for the query 'Tokyo population'."
+              },
+              {
+                "title": "Result 3 for: Tokyo population",
+                "url": "https://example.com/search?q=Tokyo+population&r=3",
+                "snippet": "This is a mock search result #3 for the query 'Tokyo population'."
+              },
+              {
+                "title": "Result 4 for: Tokyo population",
+                "url": "https://example.com/search?q=Tokyo+population&r=4",
+                "snippet": "This is a mock search result #4 for the query 'Tokyo population'."
+              },
+              {
+                "title": "Result 5 for: Tokyo population",
+                "url": "https://example.com/search?q=Tokyo+population&r=5",
+                "snippet": "This is a mock search result #5 for the query 'Tokyo population'."
+              }
+            ],
+            "error": null,
+            "latency_ms": 0.02
+          },
+          "reflection": {
+            "verdict": "continue",
+            "reasoning": "Step succeeded with non-empty output.",
+            "failure_category": null,
+            "suggested_correction": null,
+            "confidence": 0.9
+          },
+          "retries": 0,
+          "created_at": "2026-04-26T15:15:42.064733Z",
+          "completed_at": "2026-04-26T15:15:42.065627Z"
+        }
+      ],
+      "is_replanned": false,
+      "parent_plan_id": null,
+      "created_at": "2026-04-26T15:15:42.064742Z"
+    }
+  ],
+  "final_answer": "{\"reasoning\":\"Search then summarize.\",\"steps\":[{\"description\":\"Search for population of Tokyo\",\"tool\":\"web_search\",\"args\":{\"query\":\"Tokyo population\"},\"depends_on\":[]}]}",
+  "success": true,
+  "total_steps_executed": 1,
+  "total_retries": 0,
+  "total_replans": 0,
+  "failure_categories": [],
+  "wall_time_seconds": 0.003,
+  "started_at": "2026-04-26T15:15:42.062886Z",
+  "completed_at": "2026-04-26T15:15:42.065728Z"
+}

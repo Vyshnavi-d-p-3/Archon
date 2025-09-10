@@ -1,0 +1,15 @@
+{
+  "trace_id": "9b353031-60b7-4f06-891f-0da0b42c86ce",
+  "task_description": "Ingest this text: Python was created by Guido van Rossum and first released in 1991. Then answer: who created Python and when was it released?",
+  "model_name": "deterministic-fake",
+  "plans": [],
+  "final_answer": "Unexpected error: PlanParseError: Failed to parse plan: 2 validation errors for PlanOutput\nreasoning\n  Field required [type=missing, input_value={'tool': 'web_search', 'a...nts': {'query': 'test'}}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nsteps\n  Field required [type=missing, input_value={'tool': 'web_search', 'a...nts': {'query': 'test'}}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing",
+  "success": false,
+  "total_steps_executed": 0,
+  "total_retries": 0,
+  "total_replans": 0,
+  "failure_categories": [],
+  "wall_time_seconds": 0.002,
+  "started_at": "2026-04-26T15:22:00.843727Z",
+  "completed_at": "2026-04-26T15:22:00.846183Z"
+}
