@@ -75,6 +75,28 @@ python main.py run "Find the GDP of Japan and calculate per capita income"
 python main.py eval --mock --trials 1
 ```
 
+## Operations dashboard and RAG
+
+Run the local dashboard (trace metrics, filters, and **RAG Studio** for ingest + questions):
+
+```bash
+python main.py dashboard --host 127.0.0.1 --port 8787 --traces-dir traces
+```
+
+- **Health check** (load balancers, k8s probes): `GET /api/health` — returns service status, `version`, and whether RAG bearer auth is enabled.
+- **RAG auth probe** (UI uses this for the status badge): `GET /api/rag/auth-check` — optional `Authorization: Bearer <token>`.
+- **Securing RAG** — set `ARCHON_DASHBOARD_TOKEN` on the server, then paste the same value in the dashboard’s **RAG API Access** field (stored in the browser as `archon_rag_api_token`).
+
+Optional environment variables:
+
+| Variable | Purpose |
+|----------|---------|
+| `ARCHON_DASHBOARD_TOKEN` | If set, all `/api/rag/*` requests must send `Authorization: Bearer <token>`. |
+| `ARCHON_RAG_MAX_REQUEST_BYTES` | Max JSON body size for RAG POSTs (default `200000`). |
+| `ARCHON_RAG_MAX_INGEST_CHARS` | Max characters per ingest `text` field (default `50000`). |
+
+RAG session data is persisted under `<traces-dir>/rag_store/ingests.jsonl` (see `.gitignore`).
+
 ## Project Structure
 
 ```
