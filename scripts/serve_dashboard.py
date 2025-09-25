@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import time
+import tomllib
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -231,6 +232,7 @@ HTML_PAGE = """<!doctype html>
         const [ragSessionStats, setRagSessionStats] = useState(null);
         const [ragToken, setRagToken] = useState("");
         const [ragTokenVisible, setRagTokenVisible] = useState(false);
+        const [ragAuthProbe, setRagAuthProbe] = useState(null);
 
         const load = async () => {
           try {
@@ -323,6 +325,22 @@ HTML_PAGE = """<!doctype html>
           }
         };
 
+        const probeRagAuth = async () => {
+          const headers = {};
+          if (ragToken.trim()) headers["Authorization"] = `Bearer ${ragToken.trim()}`;
+          try {
+            const res = await fetch("/api/rag/auth-check", { headers });
+            if (!res.ok) {
+              setRagAuthProbe({ ok: false, auth_configured: true, message: "Auth check failed" });
+              return;
+            }
+            const j = await res.json();
+            setRagAuthProbe(j);
+          } catch (e) {
+            setRagAuthProbe({ ok: false, auth_configured: true, message: String(e) });
+          }
+        };
+
         const resetSession = async () => {
           const sid = ragSessionId.trim();
           if (!sid) return;
@@ -362,6 +380,7 @@ HTML_PAGE = """<!doctype html>
           const token = window.localStorage.getItem("archon_rag_api_token");
           if (token) setRagToken(token);
         }, []);
+        useEffect(() => { probeRagAuth(); }, [ragToken]);
         useEffect(() => {
           if (ragSessionId.trim()) {
             window.localStorage.setItem("archon_rag_session_id", ragSessionId.trim());
@@ -490,7 +509,26 @@ HTML_PAGE = """<!doctype html>
               <div style={{ ...card, marginBottom: 12 }}>
                 <SectionTitle title="RAG Studio" subtitle="Ingest context and ask retrieval-backed questions directly from the dashboard" />
                 <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, background: "#f8fafc", padding: 10, marginBottom: 10 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>RAG API Access</div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600 }}>RAG API Access</div>
+                    {ragAuthProbe && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          padding: "4px 8px",
+                          borderRadius: 999,
+                          background: ragAuthProbe.ok ? "#dcfce7" : "#fee2e2",
+                          color: ragAuthProbe.ok ? "#166534" : "#b91c1c",
+                          border: `1px solid ${ragAuthProbe.ok ? "#bbf7d0" : "#fecaca"}`,
+                        }}>{ragAuthProbe.ok ? "Auth OK" : "Auth issue"}</span>
+                        {ragAuthProbe.auth_configured === false && (
+                          <span style={{ fontSize: 11, color: "#64748b" }}>Server has no token lock</span>
+                        )}
+                        <button type="button" onClick={probeRagAuth} style={{ fontSize: 11, border: "1px solid #cbd5e1", background: "#fff", borderRadius: 6, padding: "3px 8px", cursor: "pointer" }}>Recheck</button>
+                      </div>
+                    )}
+                  </div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                     <input
                       type={ragTokenVisible ? "text" : "password"}
@@ -508,6 +546,9 @@ HTML_PAGE = """<!doctype html>
                   </div>
                   <div style={{ color: "#64748b", fontSize: 11, marginTop: 6 }}>
                     Token is stored in browser localStorage and attached to RAG API requests.
+                    {ragAuthProbe && ragAuthProbe.message && (
+                      <span style={{ display: "block", marginTop: 4, color: ragAuthProbe.ok ? "#334155" : "#b91c1c" }}>{ragAuthProbe.message}</span>
+                    )}
                   </div>
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -668,6 +709,15 @@ HTML_PAGE = """<!doctype html>
 class TraceDashboardData:
     traces: list[dict[str, Any]]
     summary: dict[str, Any]
+
+
+def _package_version() -> str:
+    try:
+        root = Path(__file__).resolve().parents[1]
+        data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+        return str((data.get("project") or {}).get("version", "0.0.0"))
+    except Exception:
+        return "unknown"
 
 
 def _normalize_trace(raw: dict[str, Any]) -> dict[str, Any]:
@@ -921,6 +971,15 @@ def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
         }
 
     class Handler(BaseHTTPRequestHandler):
+        def _require_rag_bearer(self) -> bool:
+            if not rag_api_token:
+                return True
+            auth_header = self.headers.get("Authorization", "")
+            if auth_header != f"Bearer {rag_api_token}":
+                self._send_json({"error": "unauthorized"}, code=401)
+                return False
+            return True
+
         def _send_json(self, payload: dict[str, Any], code: int = 200) -> None:
             body = json.dumps(payload).encode("utf-8")
             self.send_response(code)
@@ -939,6 +998,42 @@ def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
+            if parsed.path == "/api/health":
+                self._send_json(
+                    {
+                        "status": "ok",
+                        "service": "archon-dashboard",
+                        "version": _package_version(),
+                        "traces_dir": str(traces_dir),
+                        "rag_bearer_required": bool(rag_api_token),
+                    }
+                )
+                return
+            if parsed.path == "/api/rag/auth-check":
+                if not rag_api_token:
+                    self._send_json(
+                        {
+                            "auth_configured": False,
+                            "ok": True,
+                            "message": "Server has no ARCHON_DASHBOARD_TOKEN; RAG endpoints are not protected by bearer auth.",
+                        }
+                    )
+                    return
+                auth = self.headers.get("Authorization", "")
+                valid = auth == f"Bearer {rag_api_token}"
+                self._send_json(
+                    {
+                        "auth_configured": True,
+                        "ok": valid,
+                        "message": "Bearer token is valid."
+                        if valid
+                        else "Missing or invalid bearer token. Use the value of ARCHON_DASHBOARD_TOKEN.",
+                    }
+                )
+                return
+            if parsed.path.startswith("/api/rag/"):
+                if not self._require_rag_bearer():
+                    return
             if parsed.path == "/api/dashboard":
                 data = _load_dashboard_data(traces_dir)
                 self._send_json({"traces": data.traces, "summary": data.summary})
