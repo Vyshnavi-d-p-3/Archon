@@ -94,8 +94,13 @@ Optional environment variables:
 | `ARCHON_DASHBOARD_TOKEN` | If set, all `/api/rag/*` requests must send `Authorization: Bearer <token>`. |
 | `ARCHON_RAG_MAX_REQUEST_BYTES` | Max JSON body size for RAG POSTs (default `200000`). |
 | `ARCHON_RAG_MAX_INGEST_CHARS` | Max characters per ingest `text` field (default `50000`). |
+| `ARCHON_RAG_RATE_MAX` | Max RAG API calls per client IP per sliding window (default `120`). |
+| `ARCHON_RAG_RATE_WINDOW_SEC` | Sliding window in seconds (default `60`). |
+| `ARCHON_LOG_LEVEL` | Python log level for the dashboard process (default `INFO`). |
 
 RAG session data is persisted under `<traces-dir>/rag_store/ingests.jsonl` (see `.gitignore`).
+
+For **TLS, reverse proxy, HA, and remaining production gaps**, see [docs/PRODUCTION.md](docs/PRODUCTION.md).
 
 ## Project Structure
 

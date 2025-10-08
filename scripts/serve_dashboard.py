@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import time
 import tomllib
+import uuid
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -14,6 +16,9 @@ from threading import Lock
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from scripts.dashboard_reliability import SlidingWindowRateLimiter, append_jsonl_line
+
+_log = logging.getLogger("archon.dashboard")
 
 HTML_PAGE = """<!doctype html>
 <html>
@@ -898,6 +903,23 @@ def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
     rag_api_token = os.getenv("ARCHON_DASHBOARD_TOKEN", "").strip()
     max_request_bytes = int(os.getenv("ARCHON_RAG_MAX_REQUEST_BYTES", "200000"))
     max_ingest_chars = int(os.getenv("ARCHON_RAG_MAX_INGEST_CHARS", "50000"))
+    rag_rate_max = int(os.getenv("ARCHON_RAG_RATE_MAX", "120"))
+    rag_rate_window = float(os.getenv("ARCHON_RAG_RATE_WINDOW_SEC", "60"))
+    _logging_level = os.getenv("ARCHON_LOG_LEVEL", "INFO").upper()
+    if not logging.root.handlers:
+        logging.basicConfig(
+            level=getattr(logging, _logging_level, logging.INFO),
+            format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        )
+    _log.setLevel(getattr(logging, _logging_level, logging.INFO))
+    rag_limiter = SlidingWindowRateLimiter(
+        max_events=rag_rate_max, window_sec=rag_rate_window
+    )
+    rate_meta = {
+        "enabled": True,
+        "max_events_per_window": rag_rate_max,
+        "window_sec": rag_rate_window,
+    }
 
     def _normalize_session_id(raw_session: str) -> str:
         session = (raw_session or "").strip()
@@ -940,8 +962,7 @@ def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
             "text": text,
             "ts": int(time.time()),
         }
-        with rag_store_file.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record) + "\n")
+        append_jsonl_line(rag_store_file, record, use_flock=True)
 
     def _confidence_label(score: float) -> str:
         if score >= 0.65:
@@ -960,7 +981,9 @@ def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
                     if not line.strip():
                         continue
                     record = json.loads(line)
-                    if record.get("session_id") == session_id and record.get("event") == "ingest":
+                    if record.get("session_id") == session_id and (
+                        record.get("event", "ingest") == "ingest"
+                    ):
                         ingest_count += 1
             except Exception:
                 pass
@@ -971,6 +994,39 @@ def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
         }
 
     class Handler(BaseHTTPRequestHandler):
+        def _client_ip(self) -> str:
+            xff = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+            if xff:
+                return xff[:100]
+            return self.client_address[0] if self.client_address else "unknown"
+
+        def _ensure_request_id(self) -> str:
+            got = (self.headers.get("X-Request-Id") or "").strip()
+            if got and len(got) < 200:
+                return got
+            return uuid.uuid4().hex
+
+        def _common_security_headers(self) -> None:
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Permissions-Policy", "interest-cohort=()")
+
+        def _check_rag_rate(self) -> bool:
+            if rag_limiter.allow(f"ip:{self._client_ip()}"):
+                return True
+            _log.warning("rate_limited_rag path=%s ip=%s", self.path, self._client_ip())
+            self._send_json(
+                {
+                    "error": "rate_limited",
+                    "retry_after_sec": int(rag_rate_window),
+                },
+                code=429,
+                request_id=self._request_id,
+                retry_after_sec=int(rag_rate_window),
+            )
+            return False
+
         def _require_rag_bearer(self) -> bool:
             if not rag_api_token:
                 return True
@@ -980,23 +1036,39 @@ def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
                 return False
             return True
 
-        def _send_json(self, payload: dict[str, Any], code: int = 200) -> None:
+        def _send_json(
+            self,
+            payload: dict[str, Any],
+            code: int = 200,
+            request_id: str | None = None,
+            *,
+            retry_after_sec: int | None = None,
+        ) -> None:
+            rid = request_id or getattr(self, "_request_id", None) or self._ensure_request_id()
             body = json.dumps(payload).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Request-Id", rid)
+            if code == 429 and retry_after_sec is not None:
+                self.send_header("Retry-After", str(retry_after_sec))
+            self._common_security_headers()
             self.end_headers()
             self.wfile.write(body)
 
         def _send_html(self, html: str, code: int = 200) -> None:
+            rid = getattr(self, "_request_id", None) or self._ensure_request_id()
             body = html.encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Request-Id", rid)
+            self._common_security_headers()
             self.end_headers()
             self.wfile.write(body)
 
         def do_GET(self) -> None:  # noqa: N802
+            self._request_id = self._ensure_request_id()
             parsed = urlparse(self.path)
             if parsed.path == "/api/health":
                 self._send_json(
@@ -1006,8 +1078,11 @@ def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
                         "version": _package_version(),
                         "traces_dir": str(traces_dir),
                         "rag_bearer_required": bool(rag_api_token),
+                        "rate_limiting": rate_meta,
                     }
                 )
+                return
+            if parsed.path.startswith("/api/rag/") and not self._check_rag_rate():
                 return
             if parsed.path == "/api/rag/auth-check":
                 if not rag_api_token:
@@ -1049,10 +1124,15 @@ def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
             if parsed.path in {"/", "/dashboard"}:
                 self._send_html(HTML_PAGE)
                 return
-            self._send_json({"error": "not found"}, code=404)
+            _log.info("not_found method=GET path=%s request_id=%s", self.path, self._request_id)
+            self._send_json({"error": "not found"}, code=404, request_id=self._request_id)
+            return
 
         def do_POST(self) -> None:  # noqa: N802
+            self._request_id = self._ensure_request_id()
             parsed = urlparse(self.path)
+            if parsed.path.startswith("/api/rag/") and not self._check_rag_rate():
+                return
             length = int(self.headers.get("Content-Length", "0") or 0)
             if length > max_request_bytes:
                 self._send_json({"error": "payload_too_large"}, code=413)
@@ -1171,7 +1251,7 @@ def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
             self._send_json({"error": "not_found"}, code=404)
 
         def log_message(self, format: str, *args: Any) -> None:
-            return
+            _log.debug("%s - %s", self.address_string(), format % args)
 
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"Archon dashboard running at http://{host}:{port}")
