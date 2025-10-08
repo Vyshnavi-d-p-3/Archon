@@ -18,6 +18,8 @@ COPY . .
 RUN useradd -m agent && chown -R agent:agent /app
 USER agent
 
-# Default: run demo (no API keys needed)
+# Default: run demo (no API keys). For dashboard, override CMD, e.g.:
+# CMD ["dashboard", "--host", "0.0.0.0", "--port", "8787", "--traces-dir", "/data/traces"]
+# Add HEALTHCHECK in your compose/k8s manifest: GET /api/health (see docs/PRODUCTION.md)
 ENTRYPOINT ["python", "main.py"]
 CMD ["demo"]
