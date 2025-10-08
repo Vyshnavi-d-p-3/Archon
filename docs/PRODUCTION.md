@@ -1,0 +1,49 @@
+# Archon production deployment
+
+This document closes common gaps between the built-in `ThreadingHTTPServer` dashboard and a production deployment. Treat it as a checklist, not a guarantee; tune it to your threat model and SLOs.
+
+## What the app already provides
+
+- Trace-driven **metrics** and **RAG Studio** (ingest, query, session reset) with server-side size limits and optional **bearer** auth for `/api/rag/*`.
+- **Request IDs** (`X-Request-Id`) and **security headers** on HTTP responses.
+- **Sliding-window rate limiting** for RAG routes (per process, keyed by client IP; honor `X-Forwarded-For` from your edge proxy).
+- **Durable JSONL** append to `<traces-dir>/rag_store/ingests.jsonl` with POSIX `flock` on append (good for a single node; not a distributed store).
+- **`GET /api/health`** for probes (includes version and RAG limiter configuration).
+
+## What you should add at the edge
+
+1. **TLS** — Terminate HTTPS with nginx, Caddy, or Traefik; do not expose the app server directly on the public internet.
+2. **Forward real client IP** — Set `X-Forwarded-For` (or `X-Real-IP`) at the reverse proxy so rate limits and any future logs reflect the client, not the proxy.
+3. **Stronger RAG token handling** — Prefer server-side session cookies (HttpOnly, Secure) or a proper identity provider for anything beyond internal ops; browser `localStorage` + bearer is convenient but is sensitive to XSS.
+4. **Distributed limits and WAF** — The built-in limiter is per process. Use your proxy, API gateway, or cloud WAF for global rate limits and DDoS protection.
+5. **Secrets** — Set `ARCHON_DASHBOARD_TOKEN` via a secret manager, not committed files. Rotate on schedule or on incident.
+
+## Environment reference
+
+| Variable | Purpose |
+|----------|---------|
+| `ARCHON_DASHBOARD_TOKEN` | If set, `/api/rag/*` require `Authorization: Bearer …`. |
+| `ARCHON_RAG_MAX_REQUEST_BYTES` | Max JSON body size (default `200000`). |
+| `ARCHON_RAG_MAX_INGEST_CHARS` | Max characters per ingest `text` (default `50000`). |
+| `ARCHON_RAG_RATE_MAX` | Max RAG API requests per IP per window (default `120`). |
+| `ARCHON_RAG_RATE_WINDOW_SEC` | Sliding window length in seconds (default `60`). |
+| `ARCHON_LOG_LEVEL` | e.g. `INFO`, `DEBUG` (default `INFO`). |
+
+## RAG data model (current)
+
+- **In-process** vector index and **on-disk** JSONL log. Suitable for a **single** dashboard instance with backup of `traces/` (and `traces/rag_store/` if used).
+- For **HA / horizontal scale**, plan a **shared vector or SQL store** (e.g. pgvector, Qdrant, S3 + dedicated indexer) and replace the in-memory `RAGPipeline` wiring.
+
+## Suggested `Dockerfile` / Kubernetes
+
+- **Health check**: `GET /api/health` (expect 200, JSON with `"status": "ok"`).
+- **Command**: `python main.py dashboard --host 0.0.0.0 --port 8787 --traces-dir /data/traces` with a **volume** for traces and RAG store.
+- **User**: Run as **non-root** (image already uses `agent` in the default `Dockerfile`).
+
+## Remaining product gaps (optional roadmap)
+
+- Full **audit log** to stdout in JSON (request id, route, result, never log raw document body).
+- **CORS** only if the UI is on another origin; keep it deny-by-default.
+- **Citations + LLM answer** path (optional) for governed answers, not just retrieval snippets.
+
+For repository hosting, see the main [README](../README.md) and your deployment platform’s hardening guide.
