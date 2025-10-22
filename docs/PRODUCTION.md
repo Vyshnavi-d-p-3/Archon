@@ -9,6 +9,7 @@ This document closes common gaps between the built-in `ThreadingHTTPServer` dash
 - **Sliding-window rate limiting** for RAG routes (per process, keyed by client IP; honor `X-Forwarded-For` from your edge proxy).
 - **Durable JSONL** append to `<traces-dir>/rag_store/ingests.jsonl` with POSIX `flock` on append (good for a single node; not a distributed store).
 - **`GET /api/health`** for probes (includes version and RAG limiter configuration).
+- **JSON audit lines** (default on): one line per request on the `archon.audit` logger with method, path (truncated), status, `request_id`, client IP, and duration — **never** request bodies or `Authorization` headers. Disable with `ARCHON_AUDIT_JSON=0`. Point your log shipper at process stdout.
 
 ## What you should add at the edge
 
@@ -28,6 +29,7 @@ This document closes common gaps between the built-in `ThreadingHTTPServer` dash
 | `ARCHON_RAG_RATE_MAX` | Max RAG API requests per IP per window (default `120`). |
 | `ARCHON_RAG_RATE_WINDOW_SEC` | Sliding window length in seconds (default `60`). |
 | `ARCHON_LOG_LEVEL` | e.g. `INFO`, `DEBUG` (default `INFO`). |
+| `ARCHON_AUDIT_JSON` | `1` (default) enables one JSON audit line per request; `0` disables. |
 
 ## RAG data model (current)
 
@@ -42,7 +44,7 @@ This document closes common gaps between the built-in `ThreadingHTTPServer` dash
 
 ## Remaining product gaps (optional roadmap)
 
-- Full **audit log** to stdout in JSON (request id, route, result, never log raw document body).
+- **Log shipping** — forward `archon.audit` / process stdout to your SIEM; add alerts on 401/429 spikes or health check failures.
 - **CORS** only if the UI is on another origin; keep it deny-by-default.
 - **Citations + LLM answer** path (optional) for governed answers, not just retrieval snippets.
 

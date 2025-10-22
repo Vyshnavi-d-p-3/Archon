@@ -97,6 +97,7 @@ Optional environment variables:
 | `ARCHON_RAG_RATE_MAX` | Max RAG API calls per client IP per sliding window (default `120`). |
 | `ARCHON_RAG_RATE_WINDOW_SEC` | Sliding window in seconds (default `60`). |
 | `ARCHON_LOG_LEVEL` | Python log level for the dashboard process (default `INFO`). |
+| `ARCHON_AUDIT_JSON` | If `1` (default), emit one JSON line per HTTP request to the `archon.audit` logger (no bodies or secrets). Set to `0` to disable. |
 
 RAG session data is persisted under `<traces-dir>/rag_store/ingests.jsonl` (see `.gitignore`).
 
