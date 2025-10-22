@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlparse
 from scripts.dashboard_reliability import SlidingWindowRateLimiter, append_jsonl_line
 
 _log = logging.getLogger("archon.dashboard")
+_audit = logging.getLogger("archon.audit")
 
 HTML_PAGE = """<!doctype html>
 <html>
@@ -920,6 +921,17 @@ def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
         "max_events_per_window": rag_rate_max,
         "window_sec": rag_rate_window,
     }
+    audit_json_enabled = os.getenv("ARCHON_AUDIT_JSON", "1").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if audit_json_enabled and not _audit.handlers:
+        h = logging.StreamHandler()
+        h.setFormatter(logging.Formatter("%(message)s"))
+        _audit.addHandler(h)
+        _audit.setLevel(logging.INFO)
+        _audit.propagate = False
 
     def _normalize_session_id(raw_session: str) -> str:
         session = (raw_session or "").strip()
@@ -1067,138 +1079,195 @@ def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
             self.end_headers()
             self.wfile.write(body)
 
+        def send_response(self, code: int, message: str | None = None) -> None:  # noqa: N802
+            self._response_status = int(code)
+            super().send_response(code, message)  # type: ignore[call-arg]
+
+        def _emit_audit(self, method: str, path: str, t0: float) -> None:
+            if not audit_json_enabled:
+                return
+            rec: dict[str, Any] = {
+                "component": "archon.dashboard",
+                "method": method,
+                "path": path[:512],
+                "status": getattr(self, "_response_status", None),
+                "request_id": getattr(self, "_request_id", None),
+                "client": self._client_ip(),
+                "duration_ms": round((time.perf_counter() - t0) * 1000, 2),
+            }
+            _audit.info(json.dumps(rec, separators=(",", ":")))
+
         def do_GET(self) -> None:  # noqa: N802
             self._request_id = self._ensure_request_id()
-            parsed = urlparse(self.path)
-            if parsed.path == "/api/health":
-                self._send_json(
-                    {
-                        "status": "ok",
-                        "service": "archon-dashboard",
-                        "version": _package_version(),
-                        "traces_dir": str(traces_dir),
-                        "rag_bearer_required": bool(rag_api_token),
-                        "rate_limiting": rate_meta,
-                    }
-                )
-                return
-            if parsed.path.startswith("/api/rag/") and not self._check_rag_rate():
-                return
-            if parsed.path == "/api/rag/auth-check":
-                if not rag_api_token:
+            self._response_status = None
+            t0 = time.perf_counter()
+            try:
+                parsed = urlparse(self.path)
+                if parsed.path == "/api/health":
                     self._send_json(
                         {
-                            "auth_configured": False,
-                            "ok": True,
-                            "message": "Server has no ARCHON_DASHBOARD_TOKEN; RAG endpoints are not protected by bearer auth.",
+                            "status": "ok",
+                            "service": "archon-dashboard",
+                            "version": _package_version(),
+                            "traces_dir": str(traces_dir),
+                            "rag_bearer_required": bool(rag_api_token),
+                            "rate_limiting": rate_meta,
                         }
                     )
                     return
-                auth = self.headers.get("Authorization", "")
-                valid = auth == f"Bearer {rag_api_token}"
-                self._send_json(
-                    {
-                        "auth_configured": True,
-                        "ok": valid,
-                        "message": "Bearer token is valid."
-                        if valid
-                        else "Missing or invalid bearer token. Use the value of ARCHON_DASHBOARD_TOKEN.",
-                    }
-                )
-                return
-            if parsed.path.startswith("/api/rag/"):
-                if not self._require_rag_bearer():
+                if parsed.path.startswith("/api/rag/") and not self._check_rag_rate():
                     return
-            if parsed.path == "/api/dashboard":
-                data = _load_dashboard_data(traces_dir)
-                self._send_json({"traces": data.traces, "summary": data.summary})
-                return
-            if parsed.path == "/api/rag/session":
-                session_param = parse_qs(parsed.query or "").get("session_id", ["default"])[0]
-                session_id = _normalize_session_id(session_param)
-                with rag_lock:
-                    _get_pipeline(session_id)
-                    stats = _session_stats(session_id)
-                self._send_json(stats)
-                return
-            if parsed.path in {"/", "/dashboard"}:
-                self._send_html(HTML_PAGE)
-                return
-            _log.info("not_found method=GET path=%s request_id=%s", self.path, self._request_id)
-            self._send_json({"error": "not found"}, code=404, request_id=self._request_id)
-            return
+                if parsed.path == "/api/rag/auth-check":
+                    if not rag_api_token:
+                        self._send_json(
+                            {
+                                "auth_configured": False,
+                                "ok": True,
+                                "message": "Server has no ARCHON_DASHBOARD_TOKEN; RAG endpoints are not protected by bearer auth.",
+                            }
+                        )
+                        return
+                    auth = self.headers.get("Authorization", "")
+                    valid = auth == f"Bearer {rag_api_token}"
+                    self._send_json(
+                        {
+                            "auth_configured": True,
+                            "ok": valid,
+                            "message": "Bearer token is valid."
+                            if valid
+                            else "Missing or invalid bearer token. Use the value of ARCHON_DASHBOARD_TOKEN.",
+                        }
+                    )
+                    return
+                if parsed.path.startswith("/api/rag/"):
+                    if not self._require_rag_bearer():
+                        return
+                if parsed.path == "/api/dashboard":
+                    data = _load_dashboard_data(traces_dir)
+                    self._send_json({"traces": data.traces, "summary": data.summary})
+                    return
+                if parsed.path == "/api/rag/session":
+                    session_param = parse_qs(parsed.query or "").get("session_id", ["default"])[0]
+                    session_id = _normalize_session_id(session_param)
+                    with rag_lock:
+                        _get_pipeline(session_id)
+                        stats = _session_stats(session_id)
+                    self._send_json(stats)
+                    return
+                if parsed.path in {"/", "/dashboard"}:
+                    self._send_html(HTML_PAGE)
+                    return
+                _log.info("not_found method=GET path=%s request_id=%s", self.path, self._request_id)
+                self._send_json({"error": "not found"}, code=404, request_id=self._request_id)
+            finally:
+                self._emit_audit("GET", self.path, t0)
 
         def do_POST(self) -> None:  # noqa: N802
             self._request_id = self._ensure_request_id()
-            parsed = urlparse(self.path)
-            if parsed.path.startswith("/api/rag/") and not self._check_rag_rate():
-                return
-            length = int(self.headers.get("Content-Length", "0") or 0)
-            if length > max_request_bytes:
-                self._send_json({"error": "payload_too_large"}, code=413)
-                return
-            if rag_api_token and parsed.path.startswith("/api/rag/"):
-                auth_header = self.headers.get("Authorization", "")
-                expected = f"Bearer {rag_api_token}"
-                if auth_header != expected:
-                    self._send_json({"error": "unauthorized"}, code=401)
-                    return
-            raw_body = self.rfile.read(length) if length > 0 else b"{}"
+            self._response_status = None
+            t0 = time.perf_counter()
             try:
-                body = json.loads(raw_body.decode("utf-8"))
-            except Exception:
-                self._send_json({"error": "invalid_json"}, code=400)
-                return
+                parsed = urlparse(self.path)
+                if parsed.path.startswith("/api/rag/") and not self._check_rag_rate():
+                    return
+                length = int(self.headers.get("Content-Length", "0") or 0)
+                if length > max_request_bytes:
+                    self._send_json({"error": "payload_too_large"}, code=413)
+                    return
+                if rag_api_token and parsed.path.startswith("/api/rag/"):
+                    auth_header = self.headers.get("Authorization", "")
+                    expected = f"Bearer {rag_api_token}"
+                    if auth_header != expected:
+                        self._send_json({"error": "unauthorized"}, code=401)
+                        return
+                raw_body = self.rfile.read(length) if length > 0 else b"{}"
+                try:
+                    body = json.loads(raw_body.decode("utf-8"))
+                except Exception:
+                    self._send_json({"error": "invalid_json"}, code=400)
+                    return
 
-            if parsed.path == "/api/rag/ingest":
-                text = str(body.get("text", "") or "").strip()
-                source = str(body.get("source", "dashboard_input") or "dashboard_input")
-                session_id = _normalize_session_id(str(body.get("session_id", "default") or "default"))
-                if not text:
-                    self._send_json({"error": "text_required"}, code=400)
-                    return
-                if len(text) > max_ingest_chars:
-                    self._send_json({"error": "text_too_large"}, code=413)
-                    return
-                with rag_lock:
-                    pipeline = _get_pipeline(session_id)
-                    chunks_added = pipeline.ingest(text=text, source=source)
-                    total = pipeline.document_count
-                    _append_event_record(event="ingest", session_id=session_id, source=source, text=text)
-                    stats = _session_stats(session_id)
-                self._send_json(
-                    {
-                        "status": "ingested",
-                        "chunks_added": chunks_added,
-                        "total_chunks": total,
-                        "source": source,
-                        "session_id": session_id,
-                        "session_stats": stats,
-                    }
-                )
-                return
-
-            if parsed.path == "/api/rag/ask":
-                question = str(body.get("question", "") or "").strip()
-                top_k = int(body.get("top_k", 3) or 3)
-                session_id = _normalize_session_id(str(body.get("session_id", "default") or "default"))
-                if not question:
-                    self._send_json({"error": "question_required"}, code=400)
-                    return
-                bounded_top_k = max(1, min(top_k, 10))
-                with rag_lock:
-                    pipeline = _get_pipeline(session_id)
-                    results = pipeline.retrieve(question, top_k=bounded_top_k)
-                    context = pipeline.retrieve_as_context(question, top_k=bounded_top_k)
-                    total = pipeline.document_count
-                    stats = _session_stats(session_id)
-                if not results:
+                if parsed.path == "/api/rag/ingest":
+                    text = str(body.get("text", "") or "").strip()
+                    source = str(body.get("source", "dashboard_input") or "dashboard_input")
+                    session_id = _normalize_session_id(
+                        str(body.get("session_id", "default") or "default")
+                    )
+                    if not text:
+                        self._send_json({"error": "text_required"}, code=400)
+                        return
+                    if len(text) > max_ingest_chars:
+                        self._send_json({"error": "text_too_large"}, code=413)
+                        return
+                    with rag_lock:
+                        pipeline = _get_pipeline(session_id)
+                        chunks_added = pipeline.ingest(text=text, source=source)
+                        total = pipeline.document_count
+                        _append_event_record(
+                            event="ingest", session_id=session_id, source=source, text=text
+                        )
+                        stats = _session_stats(session_id)
                     self._send_json(
                         {
-                            "answer": "No relevant context found in the RAG index. Ingest data first, then ask again.",
-                            "sources": [],
+                            "status": "ingested",
+                            "chunks_added": chunks_added,
+                            "total_chunks": total,
+                            "source": source,
+                            "session_id": session_id,
+                            "session_stats": stats,
+                        }
+                    )
+                    return
+
+                if parsed.path == "/api/rag/ask":
+                    question = str(body.get("question", "") or "").strip()
+                    top_k = int(body.get("top_k", 3) or 3)
+                    session_id = _normalize_session_id(
+                        str(body.get("session_id", "default") or "default")
+                    )
+                    if not question:
+                        self._send_json({"error": "question_required"}, code=400)
+                        return
+                    bounded_top_k = max(1, min(top_k, 10))
+                    with rag_lock:
+                        pipeline = _get_pipeline(session_id)
+                        results = pipeline.retrieve(question, top_k=bounded_top_k)
+                        context = pipeline.retrieve_as_context(question, top_k=bounded_top_k)
+                        total = pipeline.document_count
+                        stats = _session_stats(session_id)
+                    if not results:
+                        self._send_json(
+                            {
+                                "answer": "No relevant context found in the RAG index. Ingest data first, then ask again.",
+                                "sources": [],
+                                "context": context,
+                                "results": [],
+                                "session_id": session_id,
+                                "total_chunks": total,
+                                "session_stats": stats,
+                            }
+                        )
+                        return
+
+                    sources = []
+                    for r in results:
+                        src = r.chunk.source or "unknown"
+                        if src not in sources:
+                            sources.append(src)
+                    preview_snippets = [r.chunk.content[:180].strip() for r in results[:2]]
+                    answer = " ".join(preview_snippets)
+                    self._send_json(
+                        {
+                            "answer": answer,
+                            "sources": sources,
                             "context": context,
-                            "results": [],
+                            "results": [
+                                {
+                                    **r.to_dict(),
+                                    "confidence": _confidence_label(float(r.score)),
+                                }
+                                for r in results
+                            ],
                             "session_id": session_id,
                             "total_chunks": total,
                             "session_stats": stats,
@@ -1206,49 +1275,27 @@ def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
                     )
                     return
 
-                sources = []
-                for r in results:
-                    src = r.chunk.source or "unknown"
-                    if src not in sources:
-                        sources.append(src)
-                preview_snippets = [r.chunk.content[:180].strip() for r in results[:2]]
-                answer = " ".join(preview_snippets)
-                self._send_json(
-                    {
-                        "answer": answer,
-                        "sources": sources,
-                        "context": context,
-                        "results": [
-                            {
-                                **r.to_dict(),
-                                "confidence": _confidence_label(float(r.score)),
-                            }
-                            for r in results
-                        ],
-                        "session_id": session_id,
-                        "total_chunks": total,
-                        "session_stats": stats,
-                    }
-                )
-                return
+                if parsed.path == "/api/rag/reset":
+                    session_id = _normalize_session_id(
+                        str(body.get("session_id", "default") or "default")
+                    )
+                    with rag_lock:
+                        rag_pipelines[session_id] = RAGPipeline()
+                        loaded_sessions.add(session_id)
+                        _append_event_record(event="reset", session_id=session_id)
+                        stats = _session_stats(session_id)
+                    self._send_json(
+                        {
+                            "status": "reset",
+                            "session_id": session_id,
+                            "session_stats": stats,
+                        }
+                    )
+                    return
 
-            if parsed.path == "/api/rag/reset":
-                session_id = _normalize_session_id(str(body.get("session_id", "default") or "default"))
-                with rag_lock:
-                    rag_pipelines[session_id] = RAGPipeline()
-                    loaded_sessions.add(session_id)
-                    _append_event_record(event="reset", session_id=session_id)
-                    stats = _session_stats(session_id)
-                self._send_json(
-                    {
-                        "status": "reset",
-                        "session_id": session_id,
-                        "session_stats": stats,
-                    }
-                )
-                return
-
-            self._send_json({"error": "not_found"}, code=404)
+                self._send_json({"error": "not_found"}, code=404, request_id=self._request_id)
+            finally:
+                self._emit_audit("POST", self.path, t0)
 
         def log_message(self, format: str, *args: Any) -> None:
             _log.debug("%s - %s", self.address_string(), format % args)
