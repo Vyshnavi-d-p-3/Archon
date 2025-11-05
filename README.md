@@ -83,7 +83,8 @@ Run the local dashboard (trace metrics, filters, and **RAG Studio** for ingest +
 python main.py dashboard --host 127.0.0.1 --port 8787 --traces-dir traces
 ```
 
-- **Health check** (load balancers, k8s probes): `GET /api/health` — returns service status, `version`, and whether RAG bearer auth is enabled.
+- **Liveness** (process up): `GET /api/health` — includes `checks` (filesystem readiness) and rate-limit metadata.
+- **Readiness** (can write traces / RAG store): `GET /api/ready` — returns **200** when ready, **503** when the traces directory or `rag_store` is not usable (use for Kubernetes readiness probes).
 - **RAG auth probe** (UI uses this for the status badge): `GET /api/rag/auth-check` — optional `Authorization: Bearer <token>`.
 - **Securing RAG** — set `ARCHON_DASHBOARD_TOKEN` on the server, then paste the same value in the dashboard’s **RAG API Access** field (stored in the browser as `archon_rag_api_token`).
 
@@ -98,8 +99,10 @@ Optional environment variables:
 | `ARCHON_RAG_RATE_WINDOW_SEC` | Sliding window in seconds (default `60`). |
 | `ARCHON_LOG_LEVEL` | Python log level for the dashboard process (default `INFO`). |
 | `ARCHON_AUDIT_JSON` | If `1` (default), emit one JSON line per HTTP request to the `archon.audit` logger (no bodies or secrets). Set to `0` to disable. |
+| `ARCHON_CORS_ORIGIN` | If set (e.g. `https://app.example.com` or `*`), add CORS headers and handle `OPTIONS` preflight for `/api/*`. Prefer a specific origin over `*`. |
+| `ARCHON_CORS_MAX_AGE` | Preflight cache seconds (default `86400`). |
 
-RAG session data is persisted under `<traces-dir>/rag_store/ingests.jsonl` (see `.gitignore`).
+RAG session data is persisted under `<traces-dir>/rag_store/ingests.jsonl` (see `.gitignore`). The dashboard handles **SIGTERM** for graceful shutdown in container environments.
 
 For **TLS, reverse proxy, HA, and remaining production gaps**, see [docs/PRODUCTION.md](docs/PRODUCTION.md).
 
