@@ -8,7 +8,10 @@ This document closes common gaps between the built-in `ThreadingHTTPServer` dash
 - **Request IDs** (`X-Request-Id`) and **security headers** on HTTP responses.
 - **Sliding-window rate limiting** for RAG routes (per process, keyed by client IP; honor `X-Forwarded-For` from your edge proxy).
 - **Durable JSONL** append to `<traces-dir>/rag_store/ingests.jsonl` with POSIX `flock` on append (good for a single node; not a distributed store).
-- **`GET /api/health`** for probes (includes version and RAG limiter configuration).
+- **`GET /api/health`** for **liveness** (process up; includes version, RAG limiter configuration, and filesystem `checks`).
+- **`GET /api/ready`** for **readiness** — **200** when `traces/` and `rag_store/` are writable, **503** otherwise (use for Kubernetes `readinessProbe`).
+- **SIGTERM** triggers a graceful `server.shutdown()` (with **SIGINT** still stopping the process as before).
+- **Optional CORS** via `ARCHON_CORS_ORIGIN` for browser clients on another origin (lock down to a single origin in production).
 - **JSON audit lines** (default on): one line per request on the `archon.audit` logger with method, path (truncated), status, `request_id`, client IP, and duration — **never** request bodies or `Authorization` headers. Disable with `ARCHON_AUDIT_JSON=0`. Point your log shipper at process stdout.
 
 ## What you should add at the edge
@@ -30,6 +33,8 @@ This document closes common gaps between the built-in `ThreadingHTTPServer` dash
 | `ARCHON_RAG_RATE_WINDOW_SEC` | Sliding window length in seconds (default `60`). |
 | `ARCHON_LOG_LEVEL` | e.g. `INFO`, `DEBUG` (default `INFO`). |
 | `ARCHON_AUDIT_JSON` | `1` (default) enables one JSON audit line per request; `0` disables. |
+| `ARCHON_CORS_ORIGIN` | If set, enables CORS for `/api/*` and `OPTIONS` preflight. Prefer one explicit origin. |
+| `ARCHON_CORS_MAX_AGE` | Preflight `Access-Control-Max-Age` (default `86400`). |
 
 ## RAG data model (current)
 
