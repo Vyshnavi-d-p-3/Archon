@@ -104,6 +104,8 @@ Optional environment variables:
 
 RAG session data is persisted under `<traces-dir>/rag_store/ingests.jsonl` (see `.gitignore`). The dashboard handles **SIGTERM** for graceful shutdown in container environments.
 
+`GET /api/dashboard?limit=500` returns traces (newest first), `summary` metrics for **loaded** traces, and `meta` (`version`, `traces_on_disk`, `traces_loaded`, `server_time`).
+
 For **TLS, reverse proxy, HA, and remaining production gaps**, see [docs/PRODUCTION.md](docs/PRODUCTION.md).
 
 ## Project Structure
