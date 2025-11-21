@@ -28,7 +28,10 @@ HTML_PAGE = """<!doctype html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Archon Dashboard</title>
+    <title>Archon — Operations</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -36,7 +39,7 @@ HTML_PAGE = """<!doctype html>
   <body style="margin:0;background:#f3f6fb;">
     <div id="root"></div>
     <script type="text/babel">
-      const { useEffect, useState } = React;
+      const { useEffect, useState, useMemo } = React;
 
       const PALETTE = {
         bg: "#f3f6fb",
@@ -218,9 +221,12 @@ HTML_PAGE = """<!doctype html>
       }
 
       function App() {
-        const [data, setData] = useState({ traces: [], summary: {} });
+        const DASH_TRACE_LIMIT = 500;
+        const [data, setData] = useState({ traces: [], summary: {}, meta: {} });
         const [selected, setSelected] = useState(0);
         const [error, setError] = useState("");
+        const [initialLoading, setInitialLoading] = useState(true);
+        const [activeView, setActiveView] = useState("overview");
         const [autoRefresh, setAutoRefresh] = useState(true);
         const [refreshMs, setRefreshMs] = useState(5000);
         const [modelFilter, setModelFilter] = useState("all");
@@ -242,15 +248,20 @@ HTML_PAGE = """<!doctype html>
         const [ragTokenVisible, setRagTokenVisible] = useState(false);
         const [ragAuthProbe, setRagAuthProbe] = useState(null);
 
-        const load = async () => {
+        const load = async (opts = {}) => {
+          const { isInitial = false } = opts;
           try {
-            const res = await fetch("/api/dashboard");
+            if (isInitial) setInitialLoading(true);
+            const res = await fetch(`/api/dashboard?limit=${DASH_TRACE_LIMIT}`);
             if (!res.ok) throw new Error("Failed to fetch dashboard data");
             const payload = await res.json();
+            if (!payload.meta) payload.meta = {};
             setData(payload);
             setError("");
           } catch (e) {
             setError(String(e));
+          } finally {
+            if (isInitial) setInitialLoading(false);
           }
         };
 
@@ -372,7 +383,29 @@ HTML_PAGE = """<!doctype html>
           }
         };
 
-        useEffect(() => { load(); }, []);
+        const exportCurrentTrace = () => {
+          if (!current) return;
+          const blob = new Blob([JSON.stringify(current, null, 2)], { type: "application/json;charset=utf-8" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `archon-trace-${String(current.trace_id || "export").replace(/[^a-zA-Z0-9._-]/g, "_")}.json`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+        };
+
+        const copyTraceId = async () => {
+          if (!current || !current.trace_id) return;
+          try {
+            await navigator.clipboard.writeText(String(current.trace_id));
+          } catch (e) {
+            setError(String(e));
+          }
+        };
+
+        useEffect(() => { load({ isInitial: true }); }, []);
         useEffect(() => {
           const key = "archon_rag_session_id";
           const fromStorage = window.localStorage.getItem(key);
@@ -425,13 +458,17 @@ HTML_PAGE = """<!doctype html>
           }
           return true;
         });
-        const sorted = [...filtered].sort((a, b) => {
-          if (sortBy === "success") return Number(b.success) - Number(a.success);
-          if (sortBy === "steps") return (b.total_steps || 0) - (a.total_steps || 0);
-          if (sortBy === "latency") return (b.wall_time || 0) - (a.wall_time || 0);
-          if (sortBy === "retries") return (b.retries || 0) - (a.retries || 0);
-          return 0;
-        });
+        const sorted = useMemo(() => {
+          const base = [...filtered];
+          if (sortBy === "recent") return base;
+          return base.sort((a, b) => {
+            if (sortBy === "success") return Number(b.success) - Number(a.success);
+            if (sortBy === "steps") return (b.total_steps || 0) - (a.total_steps || 0);
+            if (sortBy === "latency") return (b.wall_time || 0) - (a.wall_time || 0);
+            if (sortBy === "retries") return (b.retries || 0) - (a.retries || 0);
+            return 0;
+          });
+        }, [filtered, sortBy]);
         const current = sorted[selected] || null;
         useEffect(() => {
           if (selected >= sorted.length) setSelected(0);
@@ -447,26 +484,75 @@ HTML_PAGE = """<!doctype html>
         const verdictDist = (summary.verdict_distribution || []).map(([label, value]) => ({ label, value }));
         const recommendations = summary.recommendations || [];
         const trustIndex = summary.trust_index || 0;
+        const meta = data.meta || {};
+        const hasTraces = traces.length > 0;
+        const showKpi = activeView === "overview" || activeView === "explorer";
+        const tabStyle = (id) => ({
+          border: "1px solid " + (activeView === id ? "#2563eb" : "#e2e8f0"),
+          background: activeView === id ? "#eff6ff" : "#fff",
+          color: activeView === id ? "#1d4ed8" : "#475569",
+          borderRadius: 10,
+          padding: "8px 14px",
+          fontSize: 13,
+          fontWeight: 600,
+          cursor: "pointer",
+        });
 
         return (
           <div style={shell}>
             <div style={{ maxWidth: 1400, margin: "0 auto", padding: 20 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, flexWrap: "wrap", gap: 12 }}>
                 <div>
-                  <div style={{ fontSize: 28, fontWeight: 800, letterSpacing: "-0.02em" }}>Archon Intelligence Dashboard</div>
-                  <div style={{ color: "#64748b", fontSize: 13 }}>Operational reliability, RAG behavior, and model-level performance</div>
+                  <div style={{ fontSize: 13, color: "#64748b", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>Archon</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, letterSpacing: "-0.02em", marginTop: 2 }}>Operations / intelligence</div>
+                  <div style={{ color: "#64748b", fontSize: 13, marginTop: 4 }}>
+                    {meta.server_time && <span>Server {meta.server_time} · </span>}
+                    {meta.version && <span>v{meta.version} · </span>}
+                    {meta.traces_on_disk != null && (
+                      <span>{meta.traces_loaded} of {meta.traces_on_disk} trace files loaded (cap {DASH_TRACE_LIMIT})</span>
+                    )}
+                  </div>
                 </div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button type="button" style={tabStyle("overview")} onClick={() => setActiveView("overview")}>Overview</button>
+                    <button type="button" style={tabStyle("explorer")} onClick={() => setActiveView("explorer")}>Traces</button>
+                    <button type="button" style={tabStyle("rag")} onClick={() => setActiveView("rag")}>RAG</button>
+                  </div>
                   <label style={{ fontSize: 12, color: "#475569" }}><input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} /> Auto</label>
                   <select value={String(refreshMs)} onChange={(e) => setRefreshMs(Number(e.target.value))} style={{ border: "1px solid #cbd5e1", borderRadius: 10, padding: "7px 10px", background: "#fff" }}>
                     <option value="2000">2s</option><option value="5000">5s</option><option value="10000">10s</option>
                   </select>
-                  <button onClick={load} style={{ border: "1px solid #2563eb", color: "#fff", background: "#2563eb", borderRadius: 10, padding: "8px 12px", cursor: "pointer" }}>Refresh</button>
+                  <button type="button" onClick={() => load({})} style={{ border: "1px solid #2563eb", color: "#fff", background: "#2563eb", borderRadius: 10, padding: "8px 12px", cursor: "pointer" }}>Refresh</button>
                 </div>
               </div>
               {error && <div style={{ ...card, borderColor: "#fecaca", color: "#b91c1c", marginBottom: 12 }}>{error}</div>}
 
-              <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+              {initialLoading && (
+                <div style={{ ...card, marginBottom: 12, padding: 24, textAlign: "center" }}>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: "#334155", marginBottom: 16 }}>Loading trace intelligence…</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 10 }}>
+                    {[0,1,2,3,4,5].map((i) => (
+                      <div key={i} style={{ height: 72, borderRadius: 12, background: "linear-gradient(90deg,#e2e8f0 0%,#f1f5f9 50%,#e2e8f0 100%)", backgroundSize: "200% 100%", animation: "pulse 1.2s ease-in-out infinite" }} />
+                    ))}
+                  </div>
+                  <style>{"@keyframes pulse { 0% { background-position: 0% 0; } 100% { background-position: -200% 0; } }"}</style>
+                </div>
+              )}
+
+              {!initialLoading && !hasTraces && (activeView === "overview" || activeView === "explorer") && (
+                <div style={{ ...card, padding: 32, textAlign: "center", maxWidth: 640, margin: "0 auto 12px" }}>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: "#0f172a", marginBottom: 8 }}>No trace files yet</div>
+                  <div style={{ color: "#64748b", fontSize: 14, lineHeight: 1.5 }}>
+                    Run the agent to emit JSON under your traces directory, then refresh. Open the <strong>RAG</strong> tab to use retrieval without traces. Example:
+                    <pre style={{ textAlign: "left", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: 12, fontSize: 12, marginTop: 12, overflow: "auto" }}>python main.py run "Your task" --trace-output traces/run.json
+python main.py run --mock "demo task" --trace-output traces/mock.json</pre>
+                  </div>
+                </div>
+              )}
+
+              {hasTraces && activeView === "explorer" && (
+              <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
                 <select value={modelFilter} onChange={(e) => setModelFilter(e.target.value)} style={{ border: "1px solid #cbd5e1", borderRadius: 10, padding: "8px 10px", background: "#fff" }}>
                   <option value="all">All models</option>
                   {models.map((m) => <option key={m} value={m}>{m}</option>)}
@@ -487,15 +573,18 @@ HTML_PAGE = """<!doctype html>
                   style={{ border: "1px solid #cbd5e1", borderRadius: 10, padding: "8px 10px", background: "#fff", minWidth: 220 }}
                 />
                 <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ border: "1px solid #cbd5e1", borderRadius: 10, padding: "8px 10px", background: "#fff" }}>
-                  <option value="recent">Sort: Default</option>
+                  <option value="recent">Sort: Recent (file order)</option>
                   <option value="latency">Sort: Wall Time</option>
                   <option value="steps">Sort: Steps</option>
                   <option value="retries">Sort: Retries</option>
                   <option value="success">Sort: Success</option>
                 </select>
-                <div style={{ marginLeft: "auto", alignSelf: "center", color: "#64748b", fontSize: 12 }}>Showing {sorted.length}/{traces.length} traces</div>
+                <div style={{ marginLeft: "auto", alignSelf: "center", color: "#64748b", fontSize: 12 }}>Showing {sorted.length}/{traces.length} (filtered)</div>
               </div>
+              )}
 
+              {hasTraces && showKpi && !initialLoading && (
+              <>
               <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
                 <TrustCard
                   score={trustIndex}
@@ -503,7 +592,7 @@ HTML_PAGE = """<!doctype html>
                   retries={summary.avg_retries || 0}
                   p95={summary.p95_step_latency_ms || 0}
                 />
-                <StatCard title="Success Rate" value={`${(summary.success_rate || 0).toFixed(1)}%`} sub={`${summary.trace_count || 0} total traces`} accent="#16a34a" />
+                <StatCard title="Success Rate" value={`${(summary.success_rate || 0).toFixed(1)}%`} sub={`${summary.trace_count || 0} in view (of ${meta.traces_on_disk != null ? meta.traces_on_disk : "?"} on disk)`} accent="#16a34a" />
                 <StatCard title="Avg Wall Time" value={`${(summary.avg_wall_time || 0).toFixed(2)}s`} sub="per trace" accent="#2563eb" />
               </div>
 
@@ -513,7 +602,10 @@ HTML_PAGE = """<!doctype html>
                 <StatCard title="RAG Step Share" value={`${(summary.rag_step_share || 0).toFixed(1)}%`} sub="RAG usage footprint" accent={PALETTE.info} />
                 <StatCard title="RAG Success" value={`${(summary.rag_success_rate || 0).toFixed(1)}%`} sub={`chunks ingested: ${summary.rag_chunks_ingested || 0}`} accent="#0f766e" />
               </div>
+              </>
+              )}
 
+              {!initialLoading && activeView === "rag" && (
               <div style={{ ...card, marginBottom: 12 }}>
                 <SectionTitle title="RAG Studio" subtitle="Ingest context and ask retrieval-backed questions directly from the dashboard" />
                 <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, background: "#f8fafc", padding: 10, marginBottom: 10 }}>
@@ -651,13 +743,36 @@ HTML_PAGE = """<!doctype html>
                   </div>
                 </div>
               </div>
+              )}
 
+              {hasTraces && activeView === "overview" && !initialLoading && (
+              <div style={{ display: "grid", gap: 12, marginBottom: 12 }}>
+                <ModelComparison rows={modelRows} />
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }}>
+                  <RecommendationPanel items={recommendations} />
+                  <div style={card}>
+                    <SectionTitle title="Top Tools" />
+                    <BarRows rows={topTools} color="#2563eb" emptyText="No tool data" />
+                  </div>
+                  <div style={card}>
+                    <SectionTitle title="Failure Taxonomy" />
+                    <BarRows rows={failures} color="#dc2626" emptyText="No failures" />
+                  </div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <DistributionPills title="Step Status Mix" rows={statusDist} tone={PALETTE.primary} />
+                  <DistributionPills title="Reflection Verdict Mix" rows={verdictDist} tone={PALETTE.violet} />
+                </div>
+              </div>
+              )}
+
+              {hasTraces && activeView === "explorer" && !initialLoading && (
               <div style={{ display: "grid", gridTemplateColumns: "340px 1fr 360px", gap: 12 }}>
                 <div style={card}>
                   <SectionTitle title="Trace Explorer" subtitle="What happened in each run?" />
                   <div style={{ display: "grid", gap: 8, maxHeight: 700, overflow: "auto", paddingRight: 4 }}>
                     {sorted.map((t, i) => (
-                      <button key={t.trace_id} onClick={() => setSelected(i)} style={{
+                      <button key={String(t.trace_id) + "-" + i} onClick={() => setSelected(i)} style={{
                         textAlign: "left", borderRadius: 12, cursor: "pointer",
                         border: `1px solid ${i === selected ? "#93c5fd" : "#e2e8f0"}`,
                         background: i === selected ? "#eff6ff" : "#fff", padding: 10
@@ -672,7 +787,20 @@ HTML_PAGE = """<!doctype html>
                 <div style={{ display: "grid", gap: 12 }}>
                   <ModelComparison rows={modelRows} />
                   <div style={card}>
-                    <SectionTitle title={current ? current.task : "No trace selected"} subtitle="Why this run succeeded or failed" />
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 8 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <SectionTitle title={current ? current.task : "No trace selected"} subtitle="Why this run succeeded or failed" />
+                        {current && current.trace_id && (
+                          <div style={{ fontSize: 11, color: "#94a3b8", fontFamily: "ui-monospace,monospace" }}>id: {current.trace_id}</div>
+                        )}
+                      </div>
+                      {current && (
+                        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                          <button type="button" onClick={copyTraceId} style={{ fontSize: 12, border: "1px solid #cbd5e1", background: "#fff", borderRadius: 8, padding: "6px 10px", cursor: "pointer" }}>Copy ID</button>
+                          <button type="button" onClick={exportCurrentTrace} style={{ fontSize: 12, border: "1px solid #2563eb", color: "#2563eb", background: "#fff", borderRadius: 8, padding: "6px 10px", cursor: "pointer" }}>Export JSON</button>
+                        </div>
+                      )}
+                    </div>
                     <Timeline steps={current ? current.steps : []} onSelectStep={setSelectedStep} />
                     {selectedStep && (
                       <div style={{ marginTop: 12, border: "1px solid #dbeafe", background: "#eff6ff", borderRadius: 12, padding: 10 }}>
@@ -701,6 +829,7 @@ HTML_PAGE = """<!doctype html>
                   <DistributionPills title="Reflection Verdict Mix" rows={verdictDist} tone={PALETTE.violet} />
                 </div>
               </div>
+              )}
             </div>
           </div>
         );
@@ -717,6 +846,7 @@ HTML_PAGE = """<!doctype html>
 class TraceDashboardData:
     traces: list[dict[str, Any]]
     summary: dict[str, Any]
+    meta: dict[str, Any]
 
 
 def _package_version() -> str:
@@ -909,16 +1039,27 @@ def _summarize(traces: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _load_dashboard_data(traces_dir: Path) -> TraceDashboardData:
+def _load_dashboard_data(traces_dir: Path, limit: int) -> TraceDashboardData:
     traces: list[dict[str, Any]] = []
+    paths: list[Path] = []
     if traces_dir.exists():
-        for path in sorted(traces_dir.glob("*.json"), reverse=True):
-            try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
-                traces.append(_normalize_trace(raw))
-            except Exception:
-                continue
-    return TraceDashboardData(traces=traces, summary=_summarize(traces))
+        paths = sorted(traces_dir.glob("*.json"), reverse=True)
+    total_on_disk = len(paths)
+    cap = max(1, min(int(limit), 2000))
+    for path in paths[:cap]:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            traces.append(_normalize_trace(raw))
+        except Exception:
+            continue
+    meta: dict[str, Any] = {
+        "version": _package_version(),
+        "traces_on_disk": total_on_disk,
+        "traces_loaded": len(traces),
+        "limit": cap,
+        "server_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    return TraceDashboardData(traces=traces, summary=_summarize(traces), meta=meta)
 
 
 def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
@@ -1208,8 +1349,19 @@ def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
                         if not self._require_rag_bearer():
                             return
                     if parsed.path == "/api/dashboard":
-                        data = _load_dashboard_data(traces_dir)
-                        self._send_json({"traces": data.traces, "summary": data.summary})
+                        qd = parse_qs(parsed.query or "")
+                        try:
+                            lim = int((qd.get("limit") or ["200"])[0])
+                        except (TypeError, ValueError):
+                            lim = 200
+                        data = _load_dashboard_data(traces_dir, lim)
+                        self._send_json(
+                            {
+                                "traces": data.traces,
+                                "summary": data.summary,
+                                "meta": data.meta,
+                            }
+                        )
                         return
                     if parsed.path == "/api/rag/session":
                         session_param = parse_qs(parsed.query or "").get("session_id", ["default"])[0]
