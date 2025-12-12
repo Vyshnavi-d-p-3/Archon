@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "archon"
-version = "0.1.0"
+version = "0.2.0"
 description = "Archon — Autonomous agent with planner-executor-reflector architecture and LLM evaluation harness"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -61,6 +61,8 @@ include = [
     "/main.py",
     "/README.md",
     "/pyproject.toml",
+    "/docs",
+    "/CITATION.cff",
 ]
 
 [tool.pytest.ini_options]
