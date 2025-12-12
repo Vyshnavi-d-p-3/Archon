@@ -15,30 +15,32 @@ This is the main entry point for the evaluation pipeline:
 from __future__ import annotations
 
 import json
-import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import structlog
 from tabulate import tabulate
 
 from agent.orchestrator import AgentOrchestrator
 from agent.state import AgentTrace
-from config.settings import AgentConfig, EvalConfig, LLMConfig, LLMProvider
-from evaluation.benchmarks.tasks import (
-    BENCHMARK_TASKS,
-    BenchmarkTask,
-    TaskCategory,
-)
+from config.settings import AgentConfig, LLMConfig, LLMProvider
+from evaluation.benchmarks import load_benchmark_tasks
+from evaluation.benchmarks.tasks import BenchmarkTask
 from evaluation.metrics import (
     MetricsScorer,
     ModelSummary,
     TaskMetrics,
     aggregate_metrics,
 )
+from evaluation.reproducibility import (
+    RunManifest,
+    env_eval_seed,
+    make_eval_manifest,
+    set_global_seeds,
+    write_run_manifest,
+)
 from tools.implementations import build_default_registry
-from tools.registry import ToolRegistry
 
 logger = structlog.get_logger(__name__)
 
@@ -88,17 +90,21 @@ class EvaluationHarness:
     structured comparison reports.
     """
 
-    def __init__(self, config: Optional[AgentConfig] = None):
+    def __init__(self, config: AgentConfig | None = None):
         self._config = config or AgentConfig()
         self._scorer = MetricsScorer()
         self._results: dict[str, ModelSummary] = {}
+        self._last_run_manifest: RunManifest | None = None
 
     def run_evaluation(
         self,
-        models: Optional[list[dict[str, str]]] = None,
-        tasks: Optional[list[BenchmarkTask]] = None,
+        models: list[dict[str, str]] | None = None,
+        tasks: list[BenchmarkTask] | None = None,
         num_trials: int = 3,
         use_mock_tools: bool = False,
+        *,
+        include_extended_tasks: bool = False,
+        run_seed: int | None = None,
     ) -> dict[str, ModelSummary]:
         """
         Run full evaluation across models and tasks.
@@ -106,9 +112,13 @@ class EvaluationHarness:
         Args:
             models: List of {"provider": "...", "model": "..."} dicts.
                     Defaults to config.evaluation.models_to_compare.
-            tasks:  Subset of benchmark tasks. Defaults to all.
+            tasks:  Subset of benchmark tasks. Defaults to core (or core+extended).
             num_trials: Number of runs per model×task for variance analysis.
             use_mock_tools: If True, use mock tool implementations (no network).
+            include_extended_tasks: If True and ``tasks`` is None, add extended task suite
+                (longer, tool-heavy; not part of the default published baseline).
+            run_seed: RNG seed for Python/NumPy (bootstrap CIs, etc.); defaults to
+                ``ARCHON_EVAL_SEED`` or 42. Does not make remote LLMs bit-reproducible.
         """
         if models is None:
             models = [
@@ -117,7 +127,14 @@ class EvaluationHarness:
             ]
 
         if tasks is None:
-            tasks = BENCHMARK_TASKS
+            tasks = load_benchmark_tasks(include_extended=include_extended_tasks)
+        else:
+            tasks = list(tasks)
+
+        eval_seed = int(run_seed) if run_seed is not None else env_eval_seed()
+        set_global_seeds(eval_seed)
+        started_utc = datetime.now(UTC)
+        self._last_run_manifest = None
 
         registry = build_default_registry(use_mock=use_mock_tools)
 
@@ -187,10 +204,27 @@ class EvaluationHarness:
             summary = aggregate_metrics(all_task_metrics, model_name)
             self._results[model_name] = summary
 
-        logger.info("evaluation_completed", models_evaluated=len(self._results))
+        completed_utc = datetime.now(UTC)
+        self._last_run_manifest = make_eval_manifest(
+            task_ids=[t.task_id for t in tasks],
+            models=list(models),
+            num_trials=num_trials,
+            use_mock=use_mock_tools,
+            eval_seed=eval_seed,
+            started=started_utc,
+            completed=completed_utc,
+        )
+        out_dir = Path(self._config.evaluation.output_dir)
+        write_run_manifest(str(out_dir / "run_manifest.json"), self._last_run_manifest)
+        logger.info(
+            "evaluation_completed",
+            models_evaluated=len(self._results),
+            eval_seed=eval_seed,
+        )
+
         return self._results
 
-    def generate_report(self, output_path: Optional[str] = None) -> str:
+    def generate_report(self, output_path: str | None = None) -> str:
         """
         Generate a formatted comparison report.
         """
@@ -200,8 +234,17 @@ class EvaluationHarness:
         sections = []
         sections.append("=" * 72)
         sections.append("AGENT EVALUATION REPORT")
-        sections.append(f"Generated: {datetime.now(timezone.utc).isoformat()}")
+        sections.append(f"Generated: {datetime.now(UTC).isoformat()}")
         sections.append("=" * 72)
+
+        if self._last_run_manifest:
+            m = self._last_run_manifest
+            sections.append("\n## Reproducibility\n")
+            sections.append(
+                f"- archon {m.archon_version} | trace schema {m.trace_schema_version} | "
+                f"eval_seed={m.eval_seed} | config SHA256: {m.config_fingerprint_sha256[:16]}…"
+            )
+            sections.append(f"- {m.non_determinism_note}\n")
 
         # ── 1. Summary comparison table ──────────────────────────
         sections.append("\n## Model Comparison Summary\n")
@@ -340,9 +383,17 @@ class EvaluationHarness:
         with open(path, "w") as f:
             f.write(trace.model_dump_json(indent=2))
 
-    def export_results_json(self, output_path: str) -> None:
-        """Export raw results as JSON for further analysis."""
-        data = {}
+    def export_results_json(
+        self,
+        output_path: str,
+        *,
+        manifest: RunManifest | None = None,
+    ) -> None:
+        """Export raw results as JSON for further analysis. Embeds run manifest when available."""
+        data: dict[str, Any] = {}
+        m = manifest or self._last_run_manifest
+        if m is not None:
+            data["__archon_run__"] = m.to_dict()
         for name, summary in self._results.items():
             data[name] = {
                 "mean_tool_accuracy": summary.mean_tool_accuracy,
@@ -358,7 +409,7 @@ class EvaluationHarness:
             }
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w") as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         logger.info("results_exported", path=output_path)
 

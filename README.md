@@ -73,7 +73,24 @@ python main.py run "Find the GDP of Japan and calculate per capita income"
 
 # Evaluation (mock tools, no keys)
 python main.py eval --mock --trials 1
+# Reproducible library RNG (also set ARCHON_EVAL_SEED=42)
+python main.py eval --mock --trials 1 --seed 42
 ```
+
+## Research, reproducibility, and citation
+
+- **[docs/RESEARCH.md](docs/RESEARCH.md)** — definitions of metrics, statistical methods, limitations, and what is (and is not) controlled by the evaluation seed. Use it as a template for a paper **Methods** / **Reproducibility** section.
+- **Run manifest** — each `eval` run writes `evaluation/results/run_manifest.json` (archon version, `trace_schema_version`, `eval_seed`, task IDs, model list, SHA-256 **config fingerprint**). Aggregated `results.json` may embed the same under `__archon_run__`.
+- **Traces** — completed runs attach **`archon_version`** and **`trace_schema_version`** to `AgentTrace` JSON for interchange and long-term analysis.
+- **Citation** — see [CITATION.cff](CITATION.cff); add a `repository-code` when you host the project publicly.
+
+| Variable / CLI | Purpose |
+|----------------|---------|
+| `ARCHON_EVAL_SEED` | Default RNG seed for Python/NumPy in the eval harness (default `42`). |
+| `--seed` | Per-invocation override for the eval harness. |
+| `--include-extended-benchmarks` | Use core + [extended](evaluation/benchmarks/extended_tasks.py) tasks (longer / heavier than the default baseline). |
+
+**Note:** Library RNG is reproducible for a given seed; **remote LLM APIs are not** bit-reproducible in general, even at temperature 0. Use mock tools + `DeterministicFakeBackend` for deterministic integration tests.
 
 ## Operations dashboard and RAG
 
@@ -83,6 +100,7 @@ Run the local dashboard (trace metrics, filters, and **RAG Studio** for ingest +
 python main.py dashboard --host 127.0.0.1 --port 8787 --traces-dir traces
 ```
 
+- **Discovery**: `GET /api/info` — version, resolved `traces_dir`, and a short list of HTTP entry points.
 - **Liveness** (process up): `GET /api/health` — includes `checks` (filesystem readiness) and rate-limit metadata.
 - **Readiness** (can write traces / RAG store): `GET /api/ready` — returns **200** when ready, **503** when the traces directory or `rag_store` is not usable (use for Kubernetes readiness probes).
 - **RAG auth probe** (UI uses this for the status badge): `GET /api/rag/auth-check` — optional `Authorization: Bearer <token>`.
@@ -101,10 +119,12 @@ Optional environment variables:
 | `ARCHON_AUDIT_JSON` | If `1` (default), emit one JSON line per HTTP request to the `archon.audit` logger (no bodies or secrets). Set to `0` to disable. |
 | `ARCHON_CORS_ORIGIN` | If set (e.g. `https://app.example.com` or `*`), add CORS headers and handle `OPTIONS` preflight for `/api/*`. Prefer a specific origin over `*`. |
 | `ARCHON_CORS_MAX_AGE` | Preflight cache seconds (default `86400`). |
+| `ARCHON_DASHBOARD_METRICS_MAX` | Max **newest** `*.json` files under the traces directory used to compute `summary` KPIs (default `10000`, max `100000`). The `?limit=` query still caps the `traces` list only. If more files exist on disk than this cap, `meta.metrics_omit_older` is true. |
+| `ARCHON_EVAL_SEED` | See [Research, reproducibility, and citation](#research-reproducibility-and-citation). |
 
 RAG session data is persisted under `<traces-dir>/rag_store/ingests.jsonl` (see `.gitignore`). The dashboard handles **SIGTERM** for graceful shutdown in container environments.
 
-`GET /api/dashboard?limit=500` returns traces (newest first), `summary` metrics for **loaded** traces, and `meta` (`version`, `traces_on_disk`, `traces_loaded`, `server_time`).
+`GET /api/dashboard?limit=500` returns the **newest** `traces` for the table (capped by `limit`, max `2000`), a `summary` whose KPIs are computed from the **newest** `ARCHON_DASHBOARD_METRICS_MAX` files (unless there are fewer on disk), and `meta` (for example `version`, `traces_on_disk`, `traces_in_response`, `metrics_files_read`, `metrics_omit_older`, `server_time`).
 
 For **TLS, reverse proxy, HA, and remaining production gaps**, see [docs/PRODUCTION.md](docs/PRODUCTION.md).
 
@@ -126,38 +146,28 @@ archon/
 │   ├── registry.py           # Tool base class, registry, schema export
 │   └── implementations.py    # Concrete tools (search, fetch, calc, etc.)
 ├── evaluation/
-│   ├── benchmarks/tasks.py   # 9 benchmark tasks, 4 categories
+│   ├── benchmarks/          # Core + optional extended tasks; load via load_benchmark_tasks()
 │   ├── metrics.py            # Per-step + aggregate scoring
 │   ├── statistics.py         # Bootstrap CI, Cohen's d, Mann-Whitney U
+│   ├── reproducibility.py  # Run manifests, eval seed, trace schema version
 │   └── harness.py            # Multi-model evaluation runner
-├── tests/
-│   ├── conftest.py           # Shared fixtures + deterministic fakes
-│   ├── test_tools.py         # Registry + tool implementation tests
-│   ├── test_state_and_metrics.py  # State models + metrics tests
-│   ├── test_middleware.py    # Middleware chain + interceptor tests
-│   ├── test_errors_backends_stats.py  # Exceptions + backends + stats
-│   └── test_async_components.py  # Async planner/executor/reflector
-├── config/settings.py        # Centralized config with env-var support
-├── pyproject.toml            # Python packaging + tool config
-├── Makefile                  # Build automation
-├── Dockerfile                # Container support
-└── main.py                   # CLI entry point
+├── tests/                    # See pytest (170+); repro + dashboard + RAG + stats
+├── config/
+│   ├── settings.py           # Centralized config with env-var support
+│   └── version.py            # package_version(), TRACE_SCHEMA_VERSION
+├── docs/
+│   ├── RESEARCH.md           # Paper-style methodology and limitations
+│   └── PRODUCTION.md         # Ops / deployment
+├── CITATION.cff              # Software citation metadata
+├── pyproject.toml
+├── Makefile
+├── Dockerfile
+└── main.py
 ```
 
-## Test Coverage (115 tests)
+## Test coverage
 
-| Module | Tests | What's Verified |
-|--------|-------|-----------------|
-| Tool Registry | 16 | Registration, schema validation, execution |
-| State Models | 13 | Serialization, trace queries, working memory |
-| Middleware | 14 | Token budgets, tracing, telemetry, chain composition |
-| Exceptions | 10 | Type hierarchy, catch patterns, structured context |
-| LLM Backends | 5 | Deterministic fakes, response normalization |
-| Statistics | 14 | Bootstrap CI, Cohen's d, Cliff's delta, Mann-Whitney |
-| Async Planner | 7 | Plan creation, replanning, parsing, edge cases |
-| Async Executor | 5 | Step execution, memory recording, error handling |
-| Async Reflector | 6 | Heuristic fast-path, LLM fallback, verdicts |
-| Integration | 1 | Planner → Executor end-to-end chain |
+Run `pytest tests/ -q` — on the main branch the suite is **170+** tests (registry, state, metrics, async agent, statistics, RAG, dashboard, reproducibility). Prefer **deterministic fakes** over mocks; integration tests with live APIs are opt-in.
 
 ## Evaluation Metrics
 

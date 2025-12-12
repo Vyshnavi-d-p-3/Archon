@@ -208,6 +208,11 @@ class AsyncOrchestrator:
             wall_time=trace.wall_time_seconds,
         )
 
+        from config.version import TRACE_SCHEMA_VERSION, package_version
+
+        trace.archon_version = package_version()
+        trace.trace_schema_version = TRACE_SCHEMA_VERSION
+
         # Persist
         if self._config.trace_dir:
             self._save_trace(trace)

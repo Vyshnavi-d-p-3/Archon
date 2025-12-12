@@ -18,7 +18,20 @@ from threading import Lock
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from agent.state import FailureCategory
 from scripts.dashboard_reliability import SlidingWindowRateLimiter, append_jsonl_line
+
+# Reflector / metrics failure labels that are treated as AI safety & trust in aggregates.
+_SAFETY_FAILURE_KEYS: frozenset[str] = frozenset(
+    c.value
+    for c in (
+        FailureCategory.POLICY_VIOLATION,
+        FailureCategory.UNSAFE_OUTPUT,
+        FailureCategory.PROMPT_INJECTION,
+        FailureCategory.PII_OR_SECRETS_RISK,
+        FailureCategory.UNGROUNDED_CLAIM,
+    )
+)
 
 _log = logging.getLogger("archon.dashboard")
 _audit = logging.getLogger("archon.audit")
@@ -29,102 +42,168 @@ HTML_PAGE = """<!doctype html>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Archon — Operations</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <style>
+      *, *::before, *::after { box-sizing: border-box; }
+      button, input, select, textarea { font: inherit; }
+      button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+        outline: 2px solid #2563eb; outline-offset: 2px;
+      }
+      @media (max-width: 720px) {
+        .archon-explore-grid { grid-template-columns: 1fr !important; }
+      }
+    </style>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   </head>
-  <body style="margin:0;background:#f3f6fb;">
+  <body style="margin:0;background:#f1f5f9;">
     <div id="root"></div>
     <script type="text/babel">
       const { useEffect, useState, useMemo } = React;
+      const ThemeCtx = React.createContext("light");
 
-      const PALETTE = {
-        bg: "#f3f6fb",
-        card: "#ffffff",
-        text: "#0f172a",
-        subtext: "#64748b",
-        border: "#e2e8f0",
-        primary: "#2563eb",
-        success: "#16a34a",
-        warning: "#d97706",
-        danger: "#dc2626",
-        info: "#0d9488",
-        violet: "#7c3aed",
+      const Light = {
+        bg: "#f1f5f9", card: "#ffffff", text: "#0f172a", subtext: "#64748b", text2: "#334155", muted: "#94a3b8", border: "#e2e8f0",
+        primary: "#2563eb", success: "#16a34a", warning: "#d97706", danger: "#dc2626", info: "#0d9488", violet: "#7c3aed",
+        inputBg: "#ffffff", shellGrad: "radial-gradient(1200px 600px at 20% 0%, #eef2ff 0%, transparent 50%), linear-gradient(180deg, #f8fafc 0%, #f1f5f9 45%)",
+        cardShadow: "0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 16px rgba(15, 23, 42, 0.05)", trustInner: "linear-gradient(145deg, #ffffff 0%, #f8fafc 100%)",
+        statBg: "rgba(248, 250, 252, 0.8)", statBg2: "#fafbfc", barTrack: "rgba(15, 23, 42, 0.07)", timelineBtn: "linear-gradient(180deg, #fff, #fafbfc)", recItem: "linear-gradient(90deg, #f8fafc, #fff)", segBar: "rgba(241, 245, 249, 0.9)", kpiPanel: "#ffffff",
+        chip: {
+          default: { bg: "rgba(255,255,255,0.8)", b: "rgba(226, 232, 240, 0.9)", c: "#475569" },
+          warn: { bg: "rgba(255, 251, 235, 0.95)", b: "rgba(251, 191, 36, 0.45)", c: "#a16207" },
+          bad: { bg: "rgba(254, 242, 242, 0.9)", b: "rgba(252, 165, 165, 0.5)", c: "#b91c1c" },
+          good: { bg: "rgba(220, 252, 231, 0.85)", b: "rgba(134, 239, 172, 0.5)", c: "#166534" },
+        },
+      };
+      const Dark = {
+        bg: "#0a0d14", card: "#111827", text: "#f1f5f9", subtext: "#94a3b8", text2: "#cbd5e1", muted: "#64748b", border: "rgba(51, 65, 85, 0.55)",
+        primary: "#60a5fa", success: "#4ade80", warning: "#fbbf24", danger: "#f87171", info: "#2dd4bf", violet: "#a78bfa",
+        inputBg: "#0f172a", shellGrad: "radial-gradient(900px 500px at 20% 0%, rgba(99, 102, 241, 0.2) 0%, transparent 55%), linear-gradient(180deg, #0f172a 0%, #0a0d14 50%)",
+        cardShadow: "0 4px 24px rgba(0, 0, 0, 0.45)", trustInner: "linear-gradient(145deg, #1e293b 0%, #0f172a 100%)",
+        statBg: "rgba(15, 23, 42, 0.55)", statBg2: "rgba(30, 41, 59, 0.4)", barTrack: "rgba(148, 163, 184, 0.12)", timelineBtn: "linear-gradient(180deg, #1e293b, #0f172a)", recItem: "linear-gradient(90deg, #0f172a, #1e293b)", segBar: "rgba(15, 23, 42, 0.85)", kpiPanel: "rgba(17, 24, 39, 0.65)",
+        chip: {
+          default: { bg: "rgba(30, 41, 59, 0.6)", b: "rgba(51, 65, 85, 0.6)", c: "#cbd5e1" },
+          warn: { bg: "rgba(120, 53, 15, 0.35)", b: "rgba(245, 158, 11, 0.35)", c: "#fde68a" },
+          bad: { bg: "rgba(127, 29, 29, 0.35)", b: "rgba(248, 113, 113, 0.4)", c: "#fecaca" },
+          good: { bg: "rgba(20, 83, 45, 0.35)", b: "rgba(74, 222, 128, 0.35)", c: "#bbf7d0" },
+        },
       };
 
-      const shell = {
-        minHeight: "100vh",
-        background: "linear-gradient(180deg,#f9fbff 0%,#f3f6fb 100%)",
-        color: PALETTE.text,
-        fontFamily: "Inter, system-ui, -apple-system, Segoe UI, sans-serif",
-      };
-      const card = {
-        background: PALETTE.card,
-        borderRadius: 16,
-        border: `1px solid ${PALETTE.border}`,
-        boxShadow: "0 8px 24px rgba(15,23,42,0.06)",
-        padding: 16,
-      };
+      function useP() { return React.useContext(ThemeCtx) === "dark" ? Dark : Light; }
+      function cardS(p) {
+        return { background: p.card, borderRadius: 16, border: `1px solid ${p.border}`, boxShadow: p.cardShadow, padding: 20 };
+      }
+      function inSm(p) {
+        return { border: `1px solid ${p.border}`, borderRadius: 10, padding: "8px 12px", background: p.inputBg, fontSize: 13, color: p.text, outline: "none" };
+      }
+      function btnPrimary() {
+        return { border: "none", color: "#fff", background: "linear-gradient(180deg, #3b82f6, #2563eb)", borderRadius: 10, padding: "8px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700, boxShadow: "0 1px 2px rgba(37, 99, 235, 0.35)" };
+      }
+      function btnSecondary(p) {
+        return { border: `1px solid ${p.border}`, background: p.inputBg, color: p.text2, borderRadius: 10, padding: "7px 14px", cursor: "pointer", fontSize: 13, fontWeight: 600 };
+      }
+      function btnDanger(p) {
+        return { border: "1px solid rgba(220, 38, 38, 0.45)", background: p.inputBg, color: p === Dark ? "#fca5a5" : "#b91c1c", borderRadius: 10, padding: "7px 14px", cursor: "pointer", fontSize: 13, fontWeight: 600 };
+      }
+      function btnTeal() {
+        return { border: "1px solid #0d9488", color: "#fff", background: "linear-gradient(180deg, #14b8a6, #0d9488)", borderRadius: 10, padding: "8px 16px", cursor: "pointer", fontSize: 13, fontWeight: 700 };
+      }
+      function shellS(p) {
+        return { minHeight: "100vh", background: p.shellGrad, color: p.text, fontFamily: "Inter, system-ui, -apple-system, Segoe UI, sans-serif", WebkitFontSmoothing: "antialiased" };
+      }
 
-      function TrustCard({ score, successRate, retries, p95 }) {
-        const trustLabel = score >= 85 ? "High confidence" : score >= 70 ? "Moderate confidence" : "Needs attention";
-        const tone = score >= 85 ? PALETTE.success : score >= 70 ? PALETTE.warning : PALETTE.danger;
+      function MetaChip({ children, tone = "default" }) {
+        const p = useP();
+        const t = p.chip[tone] || p.chip.default;
+        return <span style={{ display: "inline-flex", alignItems: "center", fontSize: 11, fontWeight: 600, color: t.c, background: t.bg, border: `1px solid ${t.b}`, borderRadius: 999, padding: "5px 11px" }}>{children}</span>;
+      }
+
+      /** All values are direct aggregates from loaded traces (no composite scores). */
+      function MeasuredOutcomesCard({ stepCompletionRate, tracePassRate, retries, p95 }) {
+        const p = useP();
+        const c = stepCompletionRate;
+        const statusLabel = c >= 90 ? "Healthy steps" : c >= 70 ? "Some step issues" : "Many step issues";
+        const tone = c >= 90 ? p.success : c >= 70 ? p.warning : p.danger;
         return (
-          <div style={{ ...card, display: "grid", gap: 12 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div
+            style={{
+              display: "grid",
+              gap: 14,
+              background: p.trustInner,
+              border: `1px solid ${p.border}`,
+              borderRadius: 14,
+              padding: 18,
+              minHeight: "100%",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div>
-                <div style={{ color: PALETTE.subtext, fontSize: 12 }}>System Trust Index</div>
-                <div style={{ fontSize: 30, fontWeight: 800 }}>{score.toFixed(0)}/100</div>
+                <div style={{ color: p.muted, fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase" }}>Step completion rate</div>
+                <div style={{ fontSize: 32, fontWeight: 800, letterSpacing: "-0.03em", lineHeight: 1.1, marginTop: 4, color: p.text }}>{stepCompletionRate.toFixed(1)}<span style={{ color: p.muted, fontSize: 18, fontWeight: 600 }}>%</span></div>
+                <div style={{ color: p.subtext, fontSize: 11, marginTop: 4 }}>Share of steps with status &quot;completed&quot; in the metrics window</div>
               </div>
-              <div style={{ padding: "6px 10px", borderRadius: 999, fontSize: 12, fontWeight: 600, color: tone, background: `${tone}18` }}>{trustLabel}</div>
+              <div style={{ padding: "5px 11px", borderRadius: 999, fontSize: 11, fontWeight: 700, color: tone, background: `${tone}20`, border: `1px solid ${tone}40` }}>{statusLabel}</div>
             </div>
-            <div style={{ height: 10, borderRadius: 999, background: "#e2e8f0" }}>
-              <div style={{ height: 10, borderRadius: 999, width: `${score}%`, background: `linear-gradient(90deg, ${PALETTE.primary}, ${tone})` }} />
+            <div style={{ height: 6, borderRadius: 999, background: p.barTrack }}>
+              <div style={{ height: 6, borderRadius: 999, width: `${Math.min(100, c)}%`, background: `linear-gradient(90deg, ${p.primary}, ${tone})` }} />
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>
-              <div><div style={{ color: PALETTE.subtext, fontSize: 11 }}>Success</div><div style={{ fontWeight: 700 }}>{successRate.toFixed(1)}%</div></div>
-              <div><div style={{ color: PALETTE.subtext, fontSize: 11 }}>Avg Retries</div><div style={{ fontWeight: 700 }}>{retries.toFixed(2)}</div></div>
-              <div><div style={{ color: PALETTE.subtext, fontSize: 11 }}>P95 Step</div><div style={{ fontWeight: 700 }}>{p95.toFixed(0)}ms</div></div>
+              <div style={{ padding: "8px 0 0" }}><div style={{ color: p.muted, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>Trace pass</div><div style={{ fontWeight: 700, fontSize: 15, marginTop: 2, color: p.text }}>{tracePassRate.toFixed(1)}%</div></div>
+              <div style={{ padding: "8px 0 0" }}><div style={{ color: p.muted, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>Avg retries / trace</div><div style={{ fontWeight: 700, fontSize: 15, marginTop: 2, color: p.text }}>{retries.toFixed(2)}</div></div>
+              <div style={{ padding: "8px 0 0" }}><div style={{ color: p.muted, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>P95 step</div><div style={{ fontWeight: 700, fontSize: 15, marginTop: 2, color: p.text }}>{p95.toFixed(0)}ms</div></div>
             </div>
           </div>
         );
       }
 
-      function StatCard({ title, value, sub, accent }) {
+      function StatCard({ title, value, sub, accent, compact }) {
+        const p = useP();
         return (
-          <div style={{ ...card, borderTop: `3px solid ${accent}` }}>
-            <div style={{ color: PALETTE.subtext, fontSize: 12, fontWeight: 500 }}>{title}</div>
-            <div style={{ fontSize: 28, fontWeight: 700, marginTop: 6 }}>{value}</div>
-            <div style={{ color: PALETTE.subtext, fontSize: 12, marginTop: 4 }}>{sub}</div>
+          <div
+            style={{
+              background: compact ? p.statBg : p.statBg2,
+              border: `1px solid ${p.border}`,
+              borderLeft: `3px solid ${accent}`,
+              borderRadius: 12,
+              padding: compact ? "10px 12px" : "14px 16px",
+            }}
+          >
+            <div style={{ color: p.muted, fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}>{title}</div>
+            <div style={{ fontSize: compact ? 20 : 24, fontWeight: 800, marginTop: 4, letterSpacing: "-0.02em", color: p.text }}>{value}</div>
+            {sub && <div style={{ color: p.subtext, fontSize: 11, marginTop: 4, lineHeight: 1.35 }}>{sub}</div>}
           </div>
         );
       }
 
-      function SectionTitle({ title, subtitle }) {
+      function SectionTitle({ title, subtitle, eyebrow }) {
+        const p = useP();
         return (
-          <div style={{ marginBottom: 10 }}>
-            <div style={{ fontSize: 18, fontWeight: 750 }}>{title}</div>
-            {subtitle && <div style={{ color: PALETTE.subtext, fontSize: 12, marginTop: 2 }}>{subtitle}</div>}
+          <div style={{ marginBottom: 14 }}>
+            {eyebrow && <div style={{ color: p.muted, fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 6 }}>{eyebrow}</div>}
+            <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: "-0.02em", color: p.text }}>{title}</div>
+            {subtitle && <div style={{ color: p.subtext, fontSize: 13, marginTop: 4, lineHeight: 1.45 }}>{subtitle}</div>}
           </div>
         );
       }
 
       function BarRows({ rows, color, valueSuffix = "", emptyText = "No data" }) {
+        const p = useP();
         const max = Math.max(1, ...rows.map((r) => r.value));
         return (
-          <div style={{ display: "grid", gap: 10 }}>
-            {rows.length === 0 && <div style={{ color: PALETTE.subtext, fontSize: 12 }}>{emptyText}</div>}
+          <div style={{ display: "grid", gap: 8 }}>
+            {rows.length === 0 && <div style={{ color: p.subtext, fontSize: 12 }}>{emptyText}</div>}
             {rows.map((r) => (
               <div key={r.label}>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
-                  <span style={{ color: "#334155", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 240 }}>{r.label}</span>
-                  <span style={{ color: PALETTE.text, fontWeight: 600 }}>{r.value}{valueSuffix}</span>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 }}>
+                  <span style={{ color: p.text2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 260, fontWeight: 500 }}>{r.label}</span>
+                  <span style={{ color: p.text, fontWeight: 700, fontSize: 12 }}>{r.value}{valueSuffix}</span>
                 </div>
-                <div style={{ height: 8, borderRadius: 999, background: "#e2e8f0" }}>
-                  <div style={{ height: 8, borderRadius: 999, width: `${(r.value / max) * 100}%`, background: color }} />
+                <div style={{ height: 5, borderRadius: 999, background: p.barTrack }}>
+                  <div style={{ height: 5, borderRadius: 999, width: `${(r.value / max) * 100}%`, background: color }} />
                 </div>
               </div>
             ))}
@@ -133,26 +212,34 @@ HTML_PAGE = """<!doctype html>
       }
 
       function ModelComparison({ rows }) {
+        const p = useP();
         return (
-          <div style={card}>
+          <div style={cardS(p)}>
             <SectionTitle
-              title="Model Comparison"
-              subtitle="Outcome quality by model from observed traces"
+              eyebrow="Traces"
+              title="By model"
+              subtitle="Trace-level pass rate and share of steps that completed in the window (direct counts, no index)"
             />
             <div style={{ display: "grid", gap: 12 }}>
-              {rows.length === 0 && <div style={{ color: PALETTE.subtext, fontSize: 12 }}>No model comparison data yet</div>}
+              {rows.length === 0 && <div style={{ color: p.subtext, fontSize: 12 }}>No model comparison data yet</div>}
               {rows.map((m) => (
                 <div key={m.model}>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 5 }}>
-                    <span style={{ fontWeight: 600 }}>{m.model}</span>
-                    <span style={{ color: "#334155" }}>Success {m.success_rate.toFixed(0)}% · Reliability {m.reliability.toFixed(0)}%</span>
+                    <span style={{ fontWeight: 600, color: p.text }}>{m.model}</span>
+                    <span style={{ color: p.text2 }}>Traces pass {m.success_rate.toFixed(0)}% · Steps done {m.step_completion_rate.toFixed(0)}%</span>
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                    <div style={{ height: 8, borderRadius: 999, background: "#e2e8f0", position: "relative" }}>
-                      <div style={{ width: `${m.success_rate}%`, background: "#2563eb", height: 8, borderRadius: 999 }} />
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: p.muted, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Trace pass</div>
+                      <div style={{ height: 6, borderRadius: 999, background: p.barTrack }}>
+                        <div style={{ width: `${m.success_rate}%`, background: p.primary, height: 6, borderRadius: 999 }} />
+                      </div>
                     </div>
-                    <div style={{ height: 8, borderRadius: 999, background: "#e2e8f0", position: "relative" }}>
-                      <div style={{ width: `${m.reliability}%`, background: "#14b8a6", height: 8, borderRadius: 999 }} />
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: p.muted, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 4 }}>Step completion</div>
+                      <div style={{ height: 6, borderRadius: 999, background: p.barTrack }}>
+                        <div style={{ width: `${m.step_completion_rate}%`, background: p.info, height: 6, borderRadius: 999 }} />
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -163,14 +250,15 @@ HTML_PAGE = """<!doctype html>
       }
 
       function RecommendationPanel({ items }) {
+        const p = useP();
         return (
-          <div style={card}>
-            <SectionTitle title="Recommended Actions" subtitle="What to do next to improve reliability" />
-            <div style={{ display: "grid", gap: 8 }}>
-              {items.length === 0 && <div style={{ color: PALETTE.subtext, fontSize: 12 }}>No urgent actions. System looks healthy.</div>}
+          <div style={cardS(p)}>
+            <SectionTitle eyebrow="Next steps" title="Recommendations" subtitle="Prioritized from aggregate signals" />
+            <div style={{ display: "grid", gap: 6 }}>
+              {items.length === 0 && <div style={{ color: p.subtext, fontSize: 13, padding: "4px 0" }}>No urgent actions. Aggregate signals look healthy.</div>}
               {items.map((text, i) => (
-                <div key={i} style={{ border: "1px solid #e2e8f0", background: "#f8fafc", borderRadius: 12, padding: 10, fontSize: 13, color: "#334155" }}>
-                  <span style={{ fontWeight: 700, color: PALETTE.primary, marginRight: 8 }}>#{i + 1}</span>{text}
+                <div key={i} style={{ border: `1px solid ${p.border}`, background: p.recItem, borderRadius: 10, padding: "12px 14px", fontSize: 13, color: p.text2, lineHeight: 1.5 }}>
+                  <span style={{ fontWeight: 800, color: p.primary, marginRight: 8, fontSize: 11, opacity: 0.9 }}>{String(i + 1).padStart(2, "0")}</span>{text}
                 </div>
               ))}
             </div>
@@ -179,14 +267,15 @@ HTML_PAGE = """<!doctype html>
       }
 
       function DistributionPills({ title, rows, tone }) {
+        const p = useP();
         return (
-          <div style={card}>
-            <SectionTitle title={title} />
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              {rows.length === 0 && <span style={{ color: PALETTE.subtext, fontSize: 12 }}>No data</span>}
+          <div style={cardS(p)}>
+            <SectionTitle eyebrow="Distribution" title={title} />
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {rows.length === 0 && <span style={{ color: p.subtext, fontSize: 12 }}>No data</span>}
               {rows.map((r) => (
-                <span key={r.label} style={{ fontSize: 12, padding: "7px 10px", borderRadius: 999, background: `${tone}18`, color: tone, border: `1px solid ${tone}33` }}>
-                  {r.label}: <strong>{r.value}</strong>
+                <span key={r.label} style={{ fontSize: 11, fontWeight: 600, padding: "6px 10px", borderRadius: 8, background: `${tone}16`, color: tone, border: `1px solid ${tone}30` }}>
+                  {r.label} <span style={{ opacity: 0.85 }}>· {r.value}</span>
                 </span>
               ))}
             </div>
@@ -195,24 +284,27 @@ HTML_PAGE = """<!doctype html>
       }
 
       function Timeline({ steps, onSelectStep }) {
+        const p = useP();
         const maxLatency = Math.max(1, ...(steps || []).map((s) => s.latency || 0));
         return (
-          <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ display: "grid", gap: 8 }}>
             {(steps || []).map((s, i) => (
               <button
                 key={s.id || i}
                 onClick={() => onSelectStep && onSelectStep(s)}
-                style={{ padding: 12, border: "1px solid #e2e8f0", borderRadius: 12, background: "#fff", width: "100%", textAlign: "left", cursor: "pointer" }}
+                type="button"
+                style={{ padding: "12px 14px", border: `1px solid ${p.border}`, borderRadius: 12, background: p.timelineBtn, color: p.text, width: "100%", textAlign: "left", cursor: "pointer", boxShadow: p === Dark ? "0 1px 2px rgba(0,0,0,0.2)" : "0 1px 1px rgba(15, 23, 42, 0.03)" }}
               >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 600 }}>{i + 1}. {s.desc}</div>
-                    <div style={{ color: "#64748b", fontSize: 12 }}>{s.tool} · {s.status} · {s.verdict}{s.failure ? ` · ${s.failure}` : ""}</div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 12, color: p.muted, fontWeight: 700, marginBottom: 4 }}>Step {i + 1}</div>
+                    <div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.35, color: p.text }}>{s.desc}</div>
+                    <div style={{ color: p.subtext, fontSize: 12, marginTop: 4 }}><span style={{ color: p.text2, fontWeight: 500 }}>{s.tool}</span> · {s.status} · {s.verdict}{s.failure ? ` · ${s.failure}` : ""}</div>
                   </div>
-                  <div style={{ fontSize: 12, color: "#334155", fontWeight: 600 }}>{s.latency}ms</div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: p.text2, background: p === Dark ? "rgba(124, 58, 237, 0.2)" : "rgba(124, 58, 237, 0.08)", padding: "4px 8px", borderRadius: 8, flexShrink: 0 }}>{s.latency}ms</div>
                 </div>
-                <div style={{ height: 6, borderRadius: 999, background: "#e2e8f0", marginTop: 8 }}>
-                  <div style={{ height: 6, borderRadius: 999, width: `${(s.latency / maxLatency) * 100}%`, background: "#7c3aed" }} />
+                <div style={{ height: 3, borderRadius: 999, background: p.barTrack, marginTop: 10 }}>
+                  <div style={{ height: 3, borderRadius: 999, width: `${(s.latency / maxLatency) * 100}%`, background: "linear-gradient(90deg, #7c3aed, #4f46e5)" }} />
                 </div>
               </button>
             ))}
@@ -247,6 +339,28 @@ HTML_PAGE = """<!doctype html>
         const [ragToken, setRagToken] = useState("");
         const [ragTokenVisible, setRagTokenVisible] = useState(false);
         const [ragAuthProbe, setRagAuthProbe] = useState(null);
+        const [traceFiltersOpen, setTraceFiltersOpen] = useState(() => {
+          try { return localStorage.getItem("archon_trace_filters_open") !== "0"; } catch (e) { return true; }
+        });
+        const [theme, setTheme] = useState(() => {
+          try { return localStorage.getItem("archon_theme") === "dark" ? "dark" : "light"; } catch (e) { return "light"; }
+        });
+        const [helpOpen, setHelpOpen] = useState(false);
+        const [health, setHealth] = useState(null);
+        const [lastDataAt, setLastDataAt] = useState(null);
+
+        const p = useMemo(() => (theme === "dark" ? Dark : Light), [theme]);
+
+        useEffect(() => {
+          try { localStorage.setItem("archon_trace_filters_open", traceFiltersOpen ? "1" : "0"); } catch (e) {}
+        }, [traceFiltersOpen]);
+        useEffect(() => {
+          try { localStorage.setItem("archon_theme", theme); } catch (e) {}
+          const pal = theme === "dark" ? Dark : Light;
+          document.body.style.background = pal.bg;
+          document.body.style.color = pal.text;
+          try { document.documentElement.style.colorScheme = theme === "dark" ? "dark" : "light"; } catch (e) {}
+        }, [theme]);
 
         const load = async (opts = {}) => {
           const { isInitial = false } = opts;
@@ -258,10 +372,25 @@ HTML_PAGE = """<!doctype html>
             if (!payload.meta) payload.meta = {};
             setData(payload);
             setError("");
+            setLastDataAt(new Date().toISOString());
           } catch (e) {
             setError(String(e));
           } finally {
             if (isInitial) setInitialLoading(false);
+          }
+        };
+
+        const probeHealth = async () => {
+          try {
+            const res = await fetch("/api/health");
+            if (!res.ok) {
+              setHealth({ ok: false, ready: false, version: "?", checks: null });
+              return;
+            }
+            const j = await res.json();
+            setHealth({ ok: j.status === "ok", ready: !!(j.checks && j.checks.ready), version: j.version || "?", checks: j.checks || null });
+          } catch (e) {
+            setHealth({ ok: false, ready: false, version: "?", checks: null, err: String(e) });
           }
         };
 
@@ -406,6 +535,12 @@ HTML_PAGE = """<!doctype html>
         };
 
         useEffect(() => { load({ isInitial: true }); }, []);
+        useEffect(() => { probeHealth(); }, []);
+        useEffect(() => {
+          if (!autoRefresh) return undefined;
+          const id = setInterval(probeHealth, 120000);
+          return () => clearInterval(id);
+        }, [autoRefresh]);
         useEffect(() => {
           const key = "archon_rag_session_id";
           const fromStorage = window.localStorage.getItem(key);
@@ -483,57 +618,116 @@ HTML_PAGE = """<!doctype html>
         const statusDist = (summary.status_distribution || []).map(([label, value]) => ({ label, value }));
         const verdictDist = (summary.verdict_distribution || []).map(([label, value]) => ({ label, value }));
         const recommendations = summary.recommendations || [];
-        const trustIndex = summary.trust_index || 0;
+        const stepCompletionRate = summary.step_completion_rate != null ? summary.step_completion_rate : 0;
+        const totalStepCount = summary.total_step_count != null ? summary.total_step_count : 0;
+        const safetyFailureSteps = summary.safety_failure_steps != null ? summary.safety_failure_steps : 0;
+        const safetyTaggedStepRate = summary.safety_tagged_step_rate != null ? summary.safety_tagged_step_rate : 0;
         const meta = data.meta || {};
         const hasTraces = traces.length > 0;
         const showKpi = activeView === "overview" || activeView === "explorer";
-        const tabStyle = (id) => ({
-          border: "1px solid " + (activeView === id ? "#2563eb" : "#e2e8f0"),
-          background: activeView === id ? "#eff6ff" : "#fff",
-          color: activeView === id ? "#1d4ed8" : "#475569",
-          borderRadius: 10,
-          padding: "8px 14px",
-          fontSize: 13,
-          fontWeight: 600,
-          cursor: "pointer",
-        });
+        const kpiN = summary.trace_count != null ? summary.trace_count : meta.metrics_files_read != null ? meta.metrics_files_read : null;
+        const tableN = meta.traces_in_response != null ? meta.traces_in_response : meta.traces_loaded;
+        const segBtn = (id, label) => {
+          const on = activeView === id;
+          return (
+            <button
+              type="button"
+              onClick={() => setActiveView(id)}
+              style={{
+                border: "none",
+                background: on ? p.inputBg : "transparent",
+                color: on ? p.primary : p.muted,
+                borderRadius: 8,
+                padding: "7px 14px",
+                fontSize: 13,
+                fontWeight: 700,
+                cursor: "pointer",
+                boxShadow: on ? (theme === "dark" ? "0 1px 4px rgba(0,0,0,0.45)" : "0 1px 3px rgba(15, 23, 42, 0.12)") : "none",
+                transition: "background 0.15s, color 0.15s",
+              }}
+            >
+              {label}
+            </button>
+          );
+        };
 
         return (
-          <div style={shell}>
-            <div style={{ maxWidth: 1400, margin: "0 auto", padding: 20 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, flexWrap: "wrap", gap: 12 }}>
-                <div>
-                  <div style={{ fontSize: 13, color: "#64748b", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>Archon</div>
-                  <div style={{ fontSize: 28, fontWeight: 800, letterSpacing: "-0.02em", marginTop: 2 }}>Operations / intelligence</div>
-                  <div style={{ color: "#64748b", fontSize: 13, marginTop: 4 }}>
-                    {meta.server_time && <span>Server {meta.server_time} · </span>}
-                    {meta.version && <span>v{meta.version} · </span>}
-                    {meta.traces_on_disk != null && (
-                      <span>{meta.traces_loaded} of {meta.traces_on_disk} trace files loaded (cap {DASH_TRACE_LIMIT})</span>
+        <ThemeCtx.Provider value={theme}>
+          <div style={shellS(p)}>
+            <div style={{ maxWidth: 1280, margin: "0 auto", padding: "20px 22px 40px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 20, marginBottom: 22, paddingBottom: 20, borderBottom: "1px solid rgba(148, 163, 184, 0.25)" }}>
+                <div style={{ minWidth: 0, flex: "1 1 320px" }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 800, color: p.muted, letterSpacing: "0.12em", textTransform: "uppercase" }}>Archon</span>
+                    {meta.version && <MetaChip>v{meta.version}</MetaChip>}
+                  </div>
+                  <h1 style={{ fontSize: 26, fontWeight: 800, margin: 0, letterSpacing: "-0.035em", lineHeight: 1.15, color: p.text }}>Operations</h1>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12 }}>
+                    {meta.server_time && <MetaChip>Server {meta.server_time}</MetaChip>}
+                    {meta.traces_on_disk != null && kpiN != null && (
+                      <MetaChip>KPIs: {kpiN} of {meta.traces_on_disk} files</MetaChip>
                     )}
+                    {meta.metrics_omit_older && <MetaChip tone="warn">Newest {meta.metrics_file_cap || ""} only</MetaChip>}
+                    {meta.traces_on_disk != null && <MetaChip>Table: {tableN} (max {DASH_TRACE_LIMIT})</MetaChip>}
+                    {health && (
+                      <MetaChip tone={health.ok && health.ready ? "good" : health.ok ? "warn" : "bad"}>
+                        {health.ok ? (health.ready ? "Storage OK" : "Storage issue") : "API unreachable"}
+                      </MetaChip>
+                    )}
+                    {lastDataAt && <MetaChip>Data: {new Date(lastDataAt).toLocaleString()}</MetaChip>}
                   </div>
                 </div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <button type="button" style={tabStyle("overview")} onClick={() => setActiveView("overview")}>Overview</button>
-                    <button type="button" style={tabStyle("explorer")} onClick={() => setActiveView("explorer")}>Traces</button>
-                    <button type="button" style={tabStyle("rag")} onClick={() => setActiveView("rag")}>RAG</button>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 10 }}>
+                  <div style={{ display: "inline-flex", padding: 3, background: p.segBar, border: `1px solid ${p.border}`, borderRadius: 10 }}>
+                    {segBtn("overview", "Overview")}
+                    {segBtn("explorer", "Traces")}
+                    {segBtn("rag", "RAG")}
                   </div>
-                  <label style={{ fontSize: 12, color: "#475569" }}><input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} /> Auto</label>
-                  <select value={String(refreshMs)} onChange={(e) => setRefreshMs(Number(e.target.value))} style={{ border: "1px solid #cbd5e1", borderRadius: 10, padding: "7px 10px", background: "#fff" }}>
-                    <option value="2000">2s</option><option value="5000">5s</option><option value="10000">10s</option>
-                  </select>
-                  <button type="button" onClick={() => load({})} style={{ border: "1px solid #2563eb", color: "#fff", background: "#2563eb", borderRadius: 10, padding: "8px 12px", cursor: "pointer" }}>Refresh</button>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: p.subtext, fontWeight: 600, cursor: "pointer" }}><input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />Auto-refresh</label>
+                    <select value={String(refreshMs)} onChange={(e) => setRefreshMs(Number(e.target.value))} style={{ ...inSm(p), minWidth: 80 }}>
+                      <option value="2000">2s</option><option value="5000">5s</option><option value="10000">10s</option>
+                    </select>
+                    <button type="button" onClick={() => { load({}); probeHealth(); }} style={btnPrimary()}>Refresh</button>
+                    <button type="button" onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))} style={{ ...btnSecondary(p), fontSize: 12, padding: "6px 12px" }} title="Color theme" aria-pressed={theme === "dark"}>
+                      {theme === "dark" ? "Light" : "Dark"}
+                    </button>
+                    <button type="button" onClick={() => setHelpOpen((v) => !v)} style={{ ...btnSecondary(p), fontSize: 12, padding: "6px 12px" }} title="Help & API" aria-expanded={helpOpen}>
+                      {helpOpen ? "Close" : "Help"}
+                    </button>
+                  </div>
                 </div>
               </div>
-              {error && <div style={{ ...card, borderColor: "#fecaca", color: "#b91c1c", marginBottom: 12 }}>{error}</div>}
+              {helpOpen && (
+                <div style={{ ...cardS(p), marginBottom: 16, padding: "16px 18px" }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, color: p.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Run agent → traces → dashboard</div>
+                  <div style={{ color: p.text2, fontSize: 13, lineHeight: 1.6, maxWidth: 900 }}>
+                    <p style={{ margin: "0 0 10px" }}><strong>CLI</strong> — <code style={{ background: p.inputBg, padding: "2px 6px", borderRadius: 6, color: p.text, fontSize: 12 }}>python main.py run &quot;Your task&quot; --trace-output traces/run.json</code> then refresh this page.</p>
+                    <p style={{ margin: "0 0 10px" }}><strong>APIs</strong> — <code style={{ background: p.inputBg, padding: "2px 6px", borderRadius: 6, fontSize: 12 }}>GET /api/health</code> (liveness + checks), <code style={{ background: p.inputBg, padding: "2px 6px", borderRadius: 6, fontSize: 12 }}>GET /api/ready</code> (readiness for k8s), <code style={{ background: p.inputBg, padding: "2px 6px", borderRadius: 6, fontSize: 12 }}>GET /api/info</code> (discovery), <code style={{ background: p.inputBg, padding: "2px 6px", borderRadius: 6, fontSize: 12 }}>GET /api/dashboard?limit=500</code>.</p>
+                    <p style={{ margin: 0 }}>Use <strong>Overview</strong> for aggregate charts, <strong>Traces</strong> to inspect runs, <strong>RAG</strong> for retrieval without trace files. Set <code style={{ background: p.inputBg, padding: "2px 6px", borderRadius: 6, fontSize: 12 }}>ARCHON_DASHBOARD_TOKEN</code> to protect RAG routes.</p>
+                  </div>
+                </div>
+              )}
+              {error && (
+                <div style={{
+                  ...cardS(p),
+                  borderColor: theme === "dark" ? "rgba(248, 113, 113, 0.4)" : "rgba(252, 165, 165, 0.6)",
+                  color: theme === "dark" ? "#fecaca" : "#991b1b",
+                  marginBottom: 16,
+                  background: theme === "dark" ? "linear-gradient(90deg, rgba(69, 10, 10, 0.4), rgba(15, 23, 42, 0.9))" : "linear-gradient(90deg, rgba(254, 242, 242, 0.95), #fff)",
+                  display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12,
+                }}>
+                  <div style={{ lineHeight: 1.5, fontSize: 14, fontWeight: 500, flex: 1, minWidth: 0 }}>{error}</div>
+                  <button type="button" onClick={() => setError("")} style={{ ...btnSecondary(p), flexShrink: 0, fontSize: 12, padding: "4px 10px" }}>Dismiss</button>
+                </div>
+              )}
 
               {initialLoading && (
-                <div style={{ ...card, marginBottom: 12, padding: 24, textAlign: "center" }}>
-                  <div style={{ fontSize: 15, fontWeight: 600, color: "#334155", marginBottom: 16 }}>Loading trace intelligence…</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginBottom: 10 }}>
-                    {[0,1,2,3,4,5].map((i) => (
-                      <div key={i} style={{ height: 72, borderRadius: 12, background: "linear-gradient(90deg,#e2e8f0 0%,#f1f5f9 50%,#e2e8f0 100%)", backgroundSize: "200% 100%", animation: "pulse 1.2s ease-in-out infinite" }} />
+                <div style={{ ...cardS(p), marginBottom: 16, padding: 28, textAlign: "center" }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: p.subtext, marginBottom: 18 }}>Loading…</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+                    {[0,1,2,3,4,5,6,7].map((i) => (
+                      <div key={i} style={{ height: 56, borderRadius: 12, background: theme === "dark" ? "linear-gradient(90deg,#1e293b 0%,#0f172a 50%,#1e293b 100%)" : "linear-gradient(90deg,#e2e8f0 0%,#f8fafc 50%,#e2e8f0 100%)", backgroundSize: "200% 100%", animation: "pulse 1.2s ease-in-out infinite" }} />
                     ))}
                   </div>
                   <style>{"@keyframes pulse { 0% { background-position: 0% 0; } 100% { background-position: -200% 0; } }"}</style>
@@ -541,76 +735,98 @@ HTML_PAGE = """<!doctype html>
               )}
 
               {!initialLoading && !hasTraces && (activeView === "overview" || activeView === "explorer") && (
-                <div style={{ ...card, padding: 32, textAlign: "center", maxWidth: 640, margin: "0 auto 12px" }}>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: "#0f172a", marginBottom: 8 }}>No trace files yet</div>
-                  <div style={{ color: "#64748b", fontSize: 14, lineHeight: 1.5 }}>
-                    Run the agent to emit JSON under your traces directory, then refresh. Open the <strong>RAG</strong> tab to use retrieval without traces. Example:
-                    <pre style={{ textAlign: "left", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: 12, fontSize: 12, marginTop: 12, overflow: "auto" }}>python main.py run "Your task" --trace-output traces/run.json
+                <div style={{ ...cardS(p), padding: 36, textAlign: "center", maxWidth: 520, margin: "0 auto 20px" }}>
+                  <div style={{ width: 48, height: 48, margin: "0 auto 16px", borderRadius: 14, background: theme === "dark" ? "linear-gradient(145deg, #1e1b4b, #0f172a)" : "linear-gradient(145deg, #e0e7ff, #f1f5f9)", border: `1px solid ${p.border}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, color: p.muted }}>◆</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: p.text, marginBottom: 8, letterSpacing: "-0.02em" }}>No trace files yet</div>
+                  <div style={{ color: p.subtext, fontSize: 14, lineHeight: 1.6 }}>
+                    Run the agent to emit JSON under your traces directory, then refresh. The <strong>RAG</strong> tab works without traces. Example:
+                    <pre style={{ textAlign: "left", background: p.inputBg, border: `1px solid ${p.border}`, borderRadius: 10, padding: 14, fontSize: 12, marginTop: 14, overflow: "auto", lineHeight: 1.45, color: p.text2 }}>python main.py run "Your task" --trace-output traces/run.json
 python main.py run --mock "demo task" --trace-output traces/mock.json</pre>
                   </div>
                 </div>
               )}
 
               {hasTraces && activeView === "explorer" && (
-              <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
-                <select value={modelFilter} onChange={(e) => setModelFilter(e.target.value)} style={{ border: "1px solid #cbd5e1", borderRadius: 10, padding: "8px 10px", background: "#fff" }}>
-                  <option value="all">All models</option>
-                  {models.map((m) => <option key={m} value={m}>{m}</option>)}
-                </select>
-                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ border: "1px solid #cbd5e1", borderRadius: 10, padding: "8px 10px", background: "#fff" }}>
-                  <option value="all">All status</option><option value="pass">Pass only</option><option value="fail">Fail only</option>
-                </select>
-                <label style={{ border: "1px solid #cbd5e1", borderRadius: 10, padding: "8px 10px", background: "#fff", fontSize: 13 }}>
-                  <input type="checkbox" checked={ragOnly} onChange={(e) => setRagOnly(e.target.checked)} /> RAG only
-                </label>
-                <label style={{ border: "1px solid #cbd5e1", borderRadius: 10, padding: "8px 10px", background: "#fff", fontSize: 13 }}>
-                  <input type="checkbox" checked={incidentOnly} onChange={(e) => setIncidentOnly(e.target.checked)} /> Incident mode
-                </label>
-                <input
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search task or tool..."
-                  style={{ border: "1px solid #cbd5e1", borderRadius: 10, padding: "8px 10px", background: "#fff", minWidth: 220 }}
-                />
-                <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ border: "1px solid #cbd5e1", borderRadius: 10, padding: "8px 10px", background: "#fff" }}>
-                  <option value="recent">Sort: Recent (file order)</option>
-                  <option value="latency">Sort: Wall Time</option>
-                  <option value="steps">Sort: Steps</option>
-                  <option value="retries">Sort: Retries</option>
-                  <option value="success">Sort: Success</option>
-                </select>
-                <div style={{ marginLeft: "auto", alignSelf: "center", color: "#64748b", fontSize: 12 }}>Showing {sorted.length}/{traces.length} (filtered)</div>
+              <div style={{ marginBottom: 18, background: p.card, border: `1px solid ${p.border}`, borderRadius: 16, boxShadow: p.cardShadow, padding: "12px 16px" }}>
+                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ fontSize: 10, fontWeight: 800, color: p.muted, letterSpacing: "0.1em", textTransform: "uppercase" }}>List</div>
+                    <div style={{ fontSize: 12, color: p.subtext, fontWeight: 600 }}>{sorted.length} / {traces.length} after filters</div>
+                    <button type="button" onClick={() => setTraceFiltersOpen((v) => !v)} style={{ ...btnSecondary(p), fontSize: 12, padding: "4px 10px" }}>{traceFiltersOpen ? "Hide filters" : "Show filters"}</button>
+                  </div>
+                </div>
+                {traceFiltersOpen && (
+                <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${p.border}` }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                    <select value={modelFilter} onChange={(e) => setModelFilter(e.target.value)} style={{ ...inSm(p), minWidth: 120 }}>
+                      <option value="all">All models</option>
+                      {models.map((m) => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} style={{ ...inSm(p), minWidth: 100 }}>
+                      <option value="all">All status</option><option value="pass">Pass</option><option value="fail">Fail</option>
+                    </select>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, border: `1px solid ${p.border}`, borderRadius: 10, padding: "6px 10px", background: p.statBg, fontSize: 12, color: p.text2 }}>
+                      <input type="checkbox" checked={ragOnly} onChange={(e) => setRagOnly(e.target.checked)} />RAG
+                    </label>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, border: `1px solid ${p.border}`, borderRadius: 10, padding: "6px 10px", background: p.statBg, fontSize: 12, color: p.text2 }}>
+                      <input type="checkbox" checked={incidentOnly} onChange={(e) => setIncidentOnly(e.target.checked)} />Incidents
+                    </label>
+                    <input
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search task or tool…"
+                      style={{ ...inSm(p), minWidth: 200, flex: "1 1 180px" }}
+                    />
+                    <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ ...inSm(p), minWidth: 150 }}>
+                      <option value="recent">Recent</option>
+                      <option value="latency">Wall time</option>
+                      <option value="steps">Steps</option>
+                      <option value="retries">Retries</option>
+                      <option value="success">Success</option>
+                    </select>
+                    <button type="button" onClick={() => { setModelFilter("all"); setStatusFilter("all"); setRagOnly(false); setIncidentOnly(false); setSearchQuery(""); setSortBy("recent"); }} style={{ ...btnSecondary(p), fontSize: 12, color: p.primary, borderColor: "rgba(37, 99, 235, 0.25)" }}>Reset</button>
+                  </div>
+                </div>
+                )}
+                <div style={{ fontSize: 11, color: p.muted, marginTop: 8 }}>Charts: <strong>Overview</strong> · browse runs here</div>
               </div>
               )}
 
               {hasTraces && showKpi && !initialLoading && (
-              <>
-              <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 10, marginBottom: 12 }}>
-                <TrustCard
-                  score={trustIndex}
-                  successRate={summary.success_rate || 0}
-                  retries={summary.avg_retries || 0}
-                  p95={summary.p95_step_latency_ms || 0}
-                />
-                <StatCard title="Success Rate" value={`${(summary.success_rate || 0).toFixed(1)}%`} sub={`${summary.trace_count || 0} in view (of ${meta.traces_on_disk != null ? meta.traces_on_disk : "?"} on disk)`} accent="#16a34a" />
-                <StatCard title="Avg Wall Time" value={`${(summary.avg_wall_time || 0).toFixed(2)}s`} sub="per trace" accent="#2563eb" />
+              <div style={{ background: p.kpiPanel, border: `1px solid ${p.border}`, borderRadius: 20, boxShadow: p.cardShadow, padding: "22px 22px 20px", marginBottom: 20 }}>
+                <div style={{ fontSize: 10, fontWeight: 800, color: p.muted, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 14 }}>Aggregate KPIs</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 14 }}>
+                  <MeasuredOutcomesCard
+                    stepCompletionRate={stepCompletionRate}
+                    tracePassRate={summary.success_rate || 0}
+                    retries={summary.avg_retries || 0}
+                    p95={summary.p95_step_latency_ms || 0}
+                  />
+                  <StatCard title="Success rate" value={`${(summary.success_rate || 0).toFixed(1)}%`} sub={`${summary.trace_count || 0} traces in window`} accent={p.success} />
+                  <StatCard title="Avg wall time" value={`${(summary.avg_wall_time || 0).toFixed(2)}s`} sub="Mean per trace" accent={p.primary} />
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+                  <StatCard
+                    compact
+                    title="Safety-tagged steps"
+                    value={totalStepCount > 0 ? `${safetyTaggedStepRate.toFixed(1)}%` : "—"}
+                    sub={totalStepCount > 0 ? `${safetyFailureSteps} of ${totalStepCount} steps (reflector category)` : "No steps in window"}
+                    accent={safetyFailureSteps > 0 ? p.danger : p.success}
+                  />
+                  <StatCard compact title="Avg steps" value={(summary.avg_steps || 0).toFixed(2)} sub="Depth" accent={p.violet} />
+                  <StatCard compact title="Avg retries" value={(summary.avg_retries || 0).toFixed(2)} sub="Stability" accent={p.warning} />
+                  <StatCard compact title="RAG step share" value={`${(summary.rag_step_share || 0).toFixed(1)}%`} sub="Of all steps" accent={p.info} />
+                  <StatCard compact title="RAG success" value={`${(summary.rag_success_rate || 0).toFixed(1)}%`} sub={`${summary.rag_chunks_ingested || 0} chunks in`} accent={p.info} />
+                </div>
               </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 10, marginBottom: 12 }}>
-                <StatCard title="Avg Steps" value={(summary.avg_steps || 0).toFixed(2)} sub="execution depth" accent={PALETTE.violet} />
-                <StatCard title="Avg Retries" value={(summary.avg_retries || 0).toFixed(2)} sub="stability signal" accent={PALETTE.warning} />
-                <StatCard title="RAG Step Share" value={`${(summary.rag_step_share || 0).toFixed(1)}%`} sub="RAG usage footprint" accent={PALETTE.info} />
-                <StatCard title="RAG Success" value={`${(summary.rag_success_rate || 0).toFixed(1)}%`} sub={`chunks ingested: ${summary.rag_chunks_ingested || 0}`} accent="#0f766e" />
-              </div>
-              </>
               )}
 
               {!initialLoading && activeView === "rag" && (
-              <div style={{ ...card, marginBottom: 12 }}>
-                <SectionTitle title="RAG Studio" subtitle="Ingest context and ask retrieval-backed questions directly from the dashboard" />
-                <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, background: "#f8fafc", padding: 10, marginBottom: 10 }}>
+              <div style={{ ...cardS(p), marginBottom: 20 }}>
+                <SectionTitle eyebrow="Retrieval" title="RAG studio" subtitle="Ingest text into the session index and ask questions with citations" />
+                <div style={{ border: `1px solid ${p.border}`, borderRadius: 12, background: theme === "dark" ? "linear-gradient(180deg, #0f172a, #1e293b)" : "linear-gradient(180deg, #f8fafc, #f1f5f9)", padding: 14, marginBottom: 14 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600 }}>RAG API Access</div>
+                    <div style={{ fontSize: 10, fontWeight: 800, color: p.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>API access</div>
                     {ragAuthProbe && (
                       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                         <span style={{
@@ -623,9 +839,9 @@ python main.py run --mock "demo task" --trace-output traces/mock.json</pre>
                           border: `1px solid ${ragAuthProbe.ok ? "#bbf7d0" : "#fecaca"}`,
                         }}>{ragAuthProbe.ok ? "Auth OK" : "Auth issue"}</span>
                         {ragAuthProbe.auth_configured === false && (
-                          <span style={{ fontSize: 11, color: "#64748b" }}>Server has no token lock</span>
+                          <span style={{ fontSize: 11, color: p.muted }}>Server has no token lock</span>
                         )}
-                        <button type="button" onClick={probeRagAuth} style={{ fontSize: 11, border: "1px solid #cbd5e1", background: "#fff", borderRadius: 6, padding: "3px 8px", cursor: "pointer" }}>Recheck</button>
+                        <button type="button" onClick={probeRagAuth} style={{ ...btnSecondary(p), fontSize: 11, padding: "4px 10px" }}>Recheck</button>
                       </div>
                     )}
                   </div>
@@ -635,108 +851,108 @@ python main.py run --mock "demo task" --trace-output traces/mock.json</pre>
                       value={ragToken}
                       onChange={(e) => setRagToken(e.target.value)}
                       placeholder="Bearer token (set ARCHON_DASHBOARD_TOKEN server-side)"
-                      style={{ flex: 1, border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", background: "#fff" }}
+                      style={{ ...inSm(p), flex: 1, minWidth: 120 }}
                     />
-                    <button onClick={() => setRagTokenVisible((v) => !v)} style={{ border: "1px solid #cbd5e1", background: "#fff", borderRadius: 8, padding: "8px 10px", cursor: "pointer" }}>
+                    <button type="button" onClick={() => setRagTokenVisible((v) => !v)} style={{ ...btnSecondary(p), padding: "7px 12px" }}>
                       {ragTokenVisible ? "Hide" : "Show"}
                     </button>
-                    <button onClick={() => setRagToken("")} style={{ border: "1px solid #cbd5e1", background: "#fff", borderRadius: 8, padding: "8px 10px", cursor: "pointer" }}>
+                    <button type="button" onClick={() => setRagToken("")} style={{ ...btnSecondary(p), padding: "7px 12px" }}>
                       Clear
                     </button>
                   </div>
-                  <div style={{ color: "#64748b", fontSize: 11, marginTop: 6 }}>
+                  <div style={{ color: p.muted, fontSize: 11, marginTop: 6 }}>
                     Token is stored in browser localStorage and attached to RAG API requests.
                     {ragAuthProbe && ragAuthProbe.message && (
-                      <span style={{ display: "block", marginTop: 4, color: ragAuthProbe.ok ? "#334155" : "#b91c1c" }}>{ragAuthProbe.message}</span>
+                      <span style={{ display: "block", marginTop: 4, color: ragAuthProbe.ok ? p.text2 : p.danger }}>{ragAuthProbe.message}</span>
                     )}
                   </div>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                  <div style={{ border: "1px solid #e2e8f0", borderRadius: 12, padding: 10, background: "#fff" }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Ingest Document</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", gap: 14 }}>
+                  <div style={{ border: `1px solid ${p.border}`, borderRadius: 14, padding: 14, background: p.card, boxShadow: p.cardShadow }}>
+                    <div style={{ fontSize: 10, fontWeight: 800, color: p.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Ingest</div>
                     <input
                       value={ragSessionId}
                       onChange={(e) => setRagSessionId(e.target.value)}
-                      placeholder="session id (e.g. prod_ops_team)"
-                      style={{ width: "100%", border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", marginBottom: 8 }}
+                      placeholder="Session id (e.g. prod_ops_team)"
+                      style={{ width: "100%", ...inSm(p), marginBottom: 8 }}
                     />
                     <input
                       value={ragSource}
                       onChange={(e) => setRagSource(e.target.value)}
-                      placeholder="source id (e.g. report_q2.txt)"
-                      style={{ width: "100%", border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", marginBottom: 8 }}
+                      placeholder="Source id (e.g. report_q2.txt)"
+                      style={{ width: "100%", ...inSm(p), marginBottom: 8 }}
                     />
                     <textarea
                       value={ragText}
                       onChange={(e) => setRagText(e.target.value)}
                       placeholder="Paste text to ingest into RAG memory..."
                       rows={5}
-                      style={{ width: "100%", border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", resize: "vertical" }}
+                      style={{ width: "100%", ...inSm(p), resize: "vertical", lineHeight: 1.45 }}
                     />
-                    <div style={{ marginTop: 8 }}>
-                      <button disabled={ragBusy} onClick={ingestRag} style={{ border: "1px solid #0f766e", color: "#fff", background: "#0f766e", borderRadius: 8, padding: "8px 12px", cursor: "pointer", opacity: ragBusy ? 0.6 : 1, marginRight: 8 }}>
-                        {ragBusy ? "Working..." : "Ingest"}
+                    <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      <button type="button" disabled={ragBusy} onClick={ingestRag} style={{ ...btnTeal(), opacity: ragBusy ? 0.55 : 1 }}>
+                        {ragBusy ? "Working…" : "Ingest"}
                       </button>
-                      <button disabled={ragBusy} onClick={resetSession} style={{ border: "1px solid #dc2626", color: "#dc2626", background: "#fff", borderRadius: 8, padding: "8px 12px", cursor: "pointer", opacity: ragBusy ? 0.6 : 1 }}>
-                        Reset Session
+                      <button type="button" disabled={ragBusy} onClick={resetSession} style={{ ...btnDanger(p), opacity: ragBusy ? 0.55 : 1 }}>
+                        Reset session
                       </button>
                     </div>
                     {ragSessionStats && (
-                      <div style={{ marginTop: 10, border: "1px solid #e2e8f0", borderRadius: 8, background: "#f8fafc", padding: 8, fontSize: 12, color: "#334155" }}>
+                      <div style={{ marginTop: 10, border: `1px solid ${p.border}`, borderRadius: 8, background: p.inputBg, padding: 8, fontSize: 12, color: p.text2 }}>
                         Session stats: {ragSessionStats.session_id} · chunks {ragSessionStats.total_chunks || 0} · ingests {ragSessionStats.ingest_count || 0}
                       </div>
                     )}
                   </div>
 
-                  <div style={{ border: "1px solid #e2e8f0", borderRadius: 12, padding: 10, background: "#fff" }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Ask Question</div>
+                  <div style={{ border: `1px solid ${p.border}`, borderRadius: 14, padding: 14, background: p.card, boxShadow: p.cardShadow }}>
+                    <div style={{ fontSize: 10, fontWeight: 800, color: p.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Ask</div>
                     <input
                       value={ragQuestion}
                       onChange={(e) => setRagQuestion(e.target.value)}
-                      placeholder="Ask a question over ingested data..."
-                      style={{ width: "100%", border: "1px solid #cbd5e1", borderRadius: 8, padding: "8px 10px", marginBottom: 8 }}
+                      placeholder="Ask a question over ingested data…"
+                      style={{ width: "100%", ...inSm(p), marginBottom: 8 }}
                     />
-                    <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                      <label style={{ color: "#64748b", fontSize: 12, alignSelf: "center" }}>Top K</label>
-                      <select value={String(ragTopK)} onChange={(e) => setRagTopK(Number(e.target.value))} style={{ border: "1px solid #cbd5e1", borderRadius: 8, padding: "7px 10px", background: "#fff" }}>
+                    <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
+                      <label style={{ color: p.subtext, fontSize: 12, fontWeight: 600 }}>Top K</label>
+                      <select value={String(ragTopK)} onChange={(e) => setRagTopK(Number(e.target.value))} style={{ ...inSm(p) }}>
                         <option value="1">1</option>
                         <option value="3">3</option>
                         <option value="5">5</option>
                         <option value="8">8</option>
                       </select>
-                      <button disabled={ragBusy} onClick={askRag} style={{ marginLeft: "auto", border: "1px solid #2563eb", color: "#fff", background: "#2563eb", borderRadius: 8, padding: "8px 12px", cursor: "pointer", opacity: ragBusy ? 0.6 : 1 }}>
-                        {ragBusy ? "Working..." : "Ask"}
+                      <button type="button" disabled={ragBusy} onClick={askRag} style={{ marginLeft: "auto", ...btnPrimary(), opacity: ragBusy ? 0.55 : 1 }}>
+                        {ragBusy ? "Working…" : "Ask"}
                       </button>
                     </div>
                     {ragResult && ragResult.mode === "ask" && (
-                      <div style={{ border: "1px solid #dbeafe", background: "#eff6ff", borderRadius: 10, padding: 10, fontSize: 12 }}>
-                        <div style={{ fontWeight: 700, color: "#1d4ed8", marginBottom: 6 }}>Answer Preview</div>
-                        <div style={{ color: "#334155", marginBottom: 8 }}>{ragResult.payload.answer}</div>
-                        <div style={{ color: "#64748b", fontFamily: "monospace", marginBottom: 4 }}>Sources: {(ragResult.payload.sources || []).join(", ") || "none"}</div>
-                        <div style={{ color: "#64748b", fontFamily: "monospace", marginBottom: 8 }}>Session: {ragResult.payload.session_id || "unknown"} · Chunks: {ragResult.payload.total_chunks || 0}</div>
+                      <div style={{ border: `1px solid ${theme === "dark" ? "rgba(59, 130, 246, 0.35)" : "#bfdbfe"}`, background: theme === "dark" ? "rgba(30, 58, 138, 0.25)" : "#eff6ff", borderRadius: 10, padding: 10, fontSize: 12 }}>
+                        <div style={{ fontWeight: 700, color: p.primary, marginBottom: 6 }}>Answer preview</div>
+                        <div style={{ color: p.text2, marginBottom: 8 }}>{ragResult.payload.answer}</div>
+                        <div style={{ color: p.muted, fontFamily: "monospace", marginBottom: 4 }}>Sources: {(ragResult.payload.sources || []).join(", ") || "none"}</div>
+                        <div style={{ color: p.muted, fontFamily: "monospace", marginBottom: 8 }}>Session: {ragResult.payload.session_id || "unknown"} · Chunks: {ragResult.payload.total_chunks || 0}</div>
                         <div style={{ display: "grid", gap: 6, marginBottom: 8 }}>
                           {(ragResult.payload.results || []).slice(0, 5).map((r, idx) => (
-                            <div key={idx} style={{ border: "1px solid #bfdbfe", borderRadius: 8, background: "#fff", padding: 8 }}>
-                              <div style={{ color: "#1e3a8a", fontWeight: 600, marginBottom: 3 }}>
+                            <div key={idx} style={{ border: `1px solid ${p.border}`, borderRadius: 8, background: p.inputBg, padding: 8 }}>
+                              <div style={{ color: p.primary, fontWeight: 600, marginBottom: 3 }}>
                                 [{idx + 1}] {r.chunk?.source || "unknown"} · score {Number(r.score || 0).toFixed(3)} · {r.confidence || "low"}
                               </div>
-                              <div style={{ color: "#334155" }}>{String(r.chunk?.content || "").slice(0, 240)}</div>
+                              <div style={{ color: p.text2 }}>{String(r.chunk?.content || "").slice(0, 240)}</div>
                             </div>
                           ))}
                         </div>
                         <details>
-                          <summary style={{ cursor: "pointer", color: "#2563eb" }}>Show context</summary>
-                          <pre style={{ whiteSpace: "pre-wrap", marginTop: 6, color: "#334155", fontSize: 11 }}>{ragResult.payload.context || "(no context)"}</pre>
+                          <summary style={{ cursor: "pointer", color: p.primary }}>Show context</summary>
+                          <pre style={{ whiteSpace: "pre-wrap", marginTop: 6, color: p.text2, fontSize: 11 }}>{ragResult.payload.context || "(no context)"}</pre>
                         </details>
                       </div>
                     )}
                     {ragResult && ragResult.mode === "ingest" && (
-                      <div style={{ border: "1px solid #bbf7d0", background: "#f0fdf4", borderRadius: 10, padding: 10, fontSize: 12, color: "#166534" }}>
+                      <div style={{ border: `1px solid ${theme === "dark" ? "rgba(34, 197, 94, 0.35)" : "#bbf7d0"}`, background: theme === "dark" ? "rgba(6, 78, 59, 0.35)" : "#f0fdf4", borderRadius: 10, padding: 10, fontSize: 12, color: theme === "dark" ? "#bbf7d0" : "#166534" }}>
                         Ingested {ragResult.payload.chunks_added || 0} chunks from source "{ragResult.payload.source || "unknown"}" in session "{ragResult.payload.session_id || "unknown"}" (total chunks: {ragResult.payload.total_chunks || 0}).
                       </div>
                     )}
                     {ragResult && ragResult.mode === "reset" && (
-                      <div style={{ border: "1px solid #fee2e2", background: "#fff1f2", borderRadius: 10, padding: 10, fontSize: 12, color: "#9f1239" }}>
+                      <div style={{ border: `1px solid ${theme === "dark" ? "rgba(244, 63, 94, 0.4)" : "#fecaca"}`, background: theme === "dark" ? "rgba(88, 28, 28, 0.35)" : "#fff1f2", borderRadius: 10, padding: 10, fontSize: 12, color: theme === "dark" ? "#fecdd3" : "#9f1239" }}>
                         Session "{ragResult.payload.session_id || "unknown"}" reset successfully.
                       </div>
                     )}
@@ -746,92 +962,125 @@ python main.py run --mock "demo task" --trace-output traces/mock.json</pre>
               )}
 
               {hasTraces && activeView === "overview" && !initialLoading && (
-              <div style={{ display: "grid", gap: 12, marginBottom: 12 }}>
+              <div style={{ display: "grid", gap: 18, marginBottom: 20 }}>
+                <div style={{ fontSize: 10, fontWeight: 800, color: p.muted, letterSpacing: "0.1em", textTransform: "uppercase" }}>Failure taxonomy and AI safety</div>
+                <div style={cardS(p)}>
+                  <SectionTitle
+                    eyebrow="Priority"
+                    title="Failure taxonomy"
+                    subtitle="Reflects ordered categories from trace metrics; safety-related labels are sorted first, then by frequency"
+                  />
+                  <BarRows rows={failures} color={p.danger} emptyText="No failures" />
+                </div>
+                <div style={{ fontSize: 10, fontWeight: 800, color: p.muted, letterSpacing: "0.1em", textTransform: "uppercase" }}>Models and operations</div>
                 <ModelComparison rows={modelRows} />
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
                   <RecommendationPanel items={recommendations} />
-                  <div style={card}>
-                    <SectionTitle title="Top Tools" />
-                    <BarRows rows={topTools} color="#2563eb" emptyText="No tool data" />
-                  </div>
-                  <div style={card}>
-                    <SectionTitle title="Failure Taxonomy" />
-                    <BarRows rows={failures} color="#dc2626" emptyText="No failures" />
+                  <div style={cardS(p)}>
+                    <SectionTitle eyebrow="Usage" title="Top tools" />
+                    <BarRows rows={topTools} color={p.primary} emptyText="No tool data" />
                   </div>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                  <DistributionPills title="Step Status Mix" rows={statusDist} tone={PALETTE.primary} />
-                  <DistributionPills title="Reflection Verdict Mix" rows={verdictDist} tone={PALETTE.violet} />
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0,1fr))", gap: 16 }}>
+                  <DistributionPills title="Step status" rows={statusDist} tone={p.primary} />
+                  <DistributionPills title="Reflection verdicts" rows={verdictDist} tone={p.violet} />
                 </div>
               </div>
               )}
 
               {hasTraces && activeView === "explorer" && !initialLoading && (
-              <div style={{ display: "grid", gridTemplateColumns: "340px 1fr 360px", gap: 12 }}>
-                <div style={card}>
-                  <SectionTitle title="Trace Explorer" subtitle="What happened in each run?" />
-                  <div style={{ display: "grid", gap: 8, maxHeight: 700, overflow: "auto", paddingRight: 4 }}>
+              <div className="archon-explore-grid" style={{ display: "grid", gridTemplateColumns: "minmax(min(100%, 320px), 400px) minmax(0, 1fr)", gap: 16, alignItems: "start" }}>
+                <div style={cardS(p)}>
+                  <SectionTitle eyebrow="Browse" title="Runs" subtitle="Newest in table window" />
+                  <div style={{ display: "grid", gap: 6, maxHeight: "min(72vh, 780px)", overflow: "auto", paddingRight: 4, marginTop: 4 }}>
                     {sorted.map((t, i) => (
-                      <button key={String(t.trace_id) + "-" + i} onClick={() => setSelected(i)} style={{
-                        textAlign: "left", borderRadius: 12, cursor: "pointer",
-                        border: `1px solid ${i === selected ? "#93c5fd" : "#e2e8f0"}`,
-                        background: i === selected ? "#eff6ff" : "#fff", padding: 10
-                      }}>
-                        <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.task}</div>
-                        <div style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>{t.model} · {t.total_steps} steps · {t.success ? "PASS" : "FAIL"}</div>
+                      <button
+                        type="button"
+                        key={String(t.trace_id) + "-" + i}
+                        onClick={() => setSelected(i)}
+                        style={{
+                          textAlign: "left",
+                          borderRadius: 12,
+                          cursor: "pointer",
+                          color: p.text,
+                          border: `1px solid ${i === selected ? "rgba(59, 130, 246, 0.5)" : p.border}`,
+                          background: i === selected ? (theme === "dark" ? "linear-gradient(90deg, rgba(30, 58, 138, 0.4), #0f172a)" : "linear-gradient(90deg, #eff6ff, #fff)") : p.inputBg,
+                          padding: "11px 12px",
+                          boxShadow: i === selected ? "0 1px 2px rgba(37, 99, 235, 0.12)" : "none",
+                        }}
+                      >
+                        <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", lineHeight: 1.35 }}>{t.task}</div>
+                        <div style={{ color: p.muted, fontSize: 11, marginTop: 6, display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
+                          <span style={{ fontWeight: 600, color: p.text2 }}>{t.model}</span>
+                          <span>·</span>
+                          <span>{t.total_steps} steps</span>
+                          <span
+                            style={{
+                              marginLeft: "auto",
+                              fontWeight: 800,
+                              fontSize: 10,
+                              textTransform: "uppercase",
+                              letterSpacing: "0.04em",
+                              color: t.success ? "#166534" : "#b91c1c",
+                              background: t.success ? "rgba(22, 101, 52, 0.1)" : "rgba(185, 28, 28, 0.1)",
+                              padding: "2px 6px",
+                              borderRadius: 6,
+                            }}
+                          >{t.success ? "Pass" : "Fail"}</span>
+                        </div>
                       </button>
                     ))}
                   </div>
                 </div>
 
-                <div style={{ display: "grid", gap: 12 }}>
-                  <ModelComparison rows={modelRows} />
-                  <div style={card}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 8 }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <SectionTitle title={current ? current.task : "No trace selected"} subtitle="Why this run succeeded or failed" />
-                        {current && current.trace_id && (
-                          <div style={{ fontSize: 11, color: "#94a3b8", fontFamily: "ui-monospace,monospace" }}>id: {current.trace_id}</div>
-                        )}
-                      </div>
-                      {current && (
-                        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                          <button type="button" onClick={copyTraceId} style={{ fontSize: 12, border: "1px solid #cbd5e1", background: "#fff", borderRadius: 8, padding: "6px 10px", cursor: "pointer" }}>Copy ID</button>
-                          <button type="button" onClick={exportCurrentTrace} style={{ fontSize: 12, border: "1px solid #2563eb", color: "#2563eb", background: "#fff", borderRadius: 8, padding: "6px 10px", cursor: "pointer" }}>Export JSON</button>
-                        </div>
+                <div style={cardS(p)}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 4, flexWrap: "wrap" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 10, fontWeight: 800, color: p.muted, letterSpacing: "0.1em", textTransform: "uppercase" }}>Selected run</div>
+                      <div style={{ fontSize: 17, fontWeight: 700, marginTop: 6, lineHeight: 1.35, letterSpacing: "-0.02em", color: p.text }}>{current ? current.task : "Select a run"}</div>
+                      {current && current.trace_id && (
+                        <div style={{ fontSize: 11, color: p.muted, fontFamily: "ui-monospace,monospace", marginTop: 6 }}>{current.trace_id}</div>
                       )}
                     </div>
-                    <Timeline steps={current ? current.steps : []} onSelectStep={setSelectedStep} />
-                    {selectedStep && (
-                      <div style={{ marginTop: 12, border: "1px solid #dbeafe", background: "#eff6ff", borderRadius: 12, padding: 10 }}>
-                        <div style={{ fontSize: 12, color: "#1d4ed8", fontWeight: 700, marginBottom: 4 }}>Step Detail</div>
-                        <div style={{ fontSize: 12, color: "#334155" }}><strong>ID:</strong> {selectedStep.id}</div>
-                        <div style={{ fontSize: 12, color: "#334155" }}><strong>Tool:</strong> {selectedStep.tool}</div>
-                        <div style={{ fontSize: 12, color: "#334155" }}><strong>Status:</strong> {selectedStep.status} · <strong>Verdict:</strong> {selectedStep.verdict}</div>
-                        <div style={{ fontSize: 12, color: "#334155" }}><strong>Retries:</strong> {selectedStep.retries}</div>
-                        {selectedStep.failure && <div style={{ fontSize: 12, color: "#b91c1c" }}><strong>Failure:</strong> {selectedStep.failure}</div>}
+                    {current && (
+                      <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                        <button type="button" onClick={copyTraceId} style={{ ...btnSecondary(p), fontSize: 12, padding: "7px 12px" }}>Copy ID</button>
+                        <button type="button" onClick={exportCurrentTrace} style={{ ...btnPrimary(), fontSize: 12, padding: "7px 14px" }}>Export</button>
                       </div>
                     )}
                   </div>
-                </div>
-
-                <div style={{ display: "grid", gap: 12 }}>
-                  <RecommendationPanel items={recommendations} />
-                  <div style={card}>
-                    <SectionTitle title="Top Tools" />
-                    <BarRows rows={topTools} color="#2563eb" emptyText="Run traces to see tool usage" />
-                  </div>
-                  <div style={card}>
-                    <SectionTitle title="Failure Taxonomy" />
-                    <BarRows rows={failures} color="#dc2626" emptyText="No failures captured in current traces" />
-                  </div>
-                  <DistributionPills title="Step Status Mix" rows={statusDist} tone={PALETTE.primary} />
-                  <DistributionPills title="Reflection Verdict Mix" rows={verdictDist} tone={PALETTE.violet} />
+                  {current && (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+                      <MetaChip>{current.model}</MetaChip>
+                      <MetaChip>{(current.total_steps || 0)} steps</MetaChip>
+                      <MetaChip>{(current.wall_time != null ? Number(current.wall_time).toFixed(2) : "—")}s wall</MetaChip>
+                      <MetaChip tone={current.success ? "good" : "bad"}>{current.success ? "Passed" : "Failed"}</MetaChip>
+                    </div>
+                  )}
+                  <SectionTitle eyebrow="Execution" title="Step timeline" subtitle="Click a step for detail" />
+                  <Timeline steps={current ? current.steps : []} onSelectStep={setSelectedStep} />
+                  {selectedStep && (
+                    <div style={{ marginTop: 14, border: `1px solid ${p.border}`, background: theme === "dark" ? "rgba(30, 58, 138, 0.2)" : "linear-gradient(180deg, #f8fbff, #eff6ff)", borderRadius: 12, padding: 14 }}>
+                      <div style={{ fontSize: 10, fontWeight: 800, color: p.primary, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Step detail</div>
+                      <div style={{ fontSize: 13, color: p.text2, lineHeight: 1.55 }}>
+                        <div><span style={{ color: p.muted, fontSize: 11, fontWeight: 600 }}>ID</span> {selectedStep.id}</div>
+                        <div style={{ marginTop: 4 }}><span style={{ color: p.muted, fontSize: 11, fontWeight: 600 }}>Tool</span> {selectedStep.tool}</div>
+                        <div style={{ marginTop: 4 }}><span style={{ color: p.muted, fontSize: 11, fontWeight: 600 }}>Status & verdict</span> {selectedStep.status} · {selectedStep.verdict} · {selectedStep.retries} retries</div>
+                        {selectedStep.failure && <div style={{ marginTop: 6, color: p.danger, fontWeight: 600 }}>{selectedStep.failure}</div>}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
               )}
+
+              <div style={{ marginTop: 28, paddingTop: 18, borderTop: "1px solid rgba(148, 163, 184, 0.25)", textAlign: "center", fontSize: 12, color: p.muted, lineHeight: 1.6 }}>
+                <div>Archon operations · v{meta.version || "—"}</div>
+                <div style={{ marginTop: 4 }}><span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>GET /api/health</span> · <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>GET /api/info</span> · <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>GET /api/dashboard</span></div>
+              </div>
             </div>
           </div>
+        </ThemeCtx.Provider>
         );
       }
 
@@ -851,11 +1100,16 @@ class TraceDashboardData:
 
 def _package_version() -> str:
     try:
-        root = Path(__file__).resolve().parents[1]
-        data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-        return str((data.get("project") or {}).get("version", "0.0.0"))
+        from config.version import package_version
+
+        return package_version()
     except Exception:
-        return "unknown"
+        try:
+            root = Path(__file__).resolve().parents[1]
+            data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+            return str((data.get("project") or {}).get("version", "0.0.0"))
+        except Exception:
+            return "unknown"
 
 
 def _readiness_check(traces_dir: Path) -> dict[str, Any]:
@@ -883,6 +1137,31 @@ def _readiness_check(traces_dir: Path) -> dict[str, Any]:
         and out.get("rag_store_writable")
     )
     return out
+
+
+def _api_info_payload(traces_dir: Path) -> dict[str, Any]:
+    """Small discovery document for clients and operators."""
+    return {
+        "application": "archon",
+        "component": "archon-dashboard",
+        "version": _package_version(),
+        "traces_dir": str(traces_dir.resolve()),
+        "endpoints": {
+            "info": "GET /api/info",
+            "health": "GET /api/health",
+            "ready": "GET /api/ready",
+            "dashboard": "GET /api/dashboard?limit=<1-2000>",
+        },
+    }
+
+
+# Minimal tab icon (layers / stack) — no external assets.
+FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect width="32" height="32" rx="6" fill="#0f172a"/>'
+    '<path fill="#60a5fa" d="M6 20h20v3H6zM8 15h16v3H8zM10 10h12v3H10z"/>'
+    "</svg>"
+)
 
 
 def _normalize_trace(raw: dict[str, Any]) -> dict[str, Any]:
@@ -921,10 +1200,14 @@ def _normalize_trace(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _summarize(traces: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate *observable* fields from normalized traces. No composite scores: rates and counts
+    are direct ratios (e.g. step completion = completed steps / total steps in window)."""
     if not traces:
         return {
             "trace_count": 0,
             "success_rate": 0.0,
+            "total_step_count": 0,
+            "step_completion_rate": 0.0,
             "avg_wall_time": 0.0,
             "avg_steps": 0.0,
             "avg_retries": 0.0,
@@ -933,12 +1216,13 @@ def _summarize(traces: list[dict[str, Any]]) -> dict[str, Any]:
             "rag_chunks_ingested": 0,
             "top_tools": [],
             "failure_taxonomy": [],
+            "safety_failure_steps": 0,
+            "safety_tagged_step_rate": 0.0,
             "model_comparison": [],
             "status_distribution": [],
             "verdict_distribution": [],
             "p50_step_latency_ms": 0.0,
             "p95_step_latency_ms": 0.0,
-            "trust_index": 0.0,
             "recommendations": [],
         }
 
@@ -961,7 +1245,10 @@ def _summarize(traces: list[dict[str, Any]]) -> dict[str, Any]:
             rag_chunks += int(step["output"].get("chunks_added", 0) or 0)
 
     trace_count = len(traces)
+    total_step_count = len(all_steps)
     success_rate = (sum(1 for t in traces if t["success"]) / trace_count) * 100
+    completed_steps = sum(1 for s in all_steps if s.get("status") == "completed")
+    step_completion_rate = (completed_steps / total_step_count) * 100.0 if total_step_count else 0.0
     avg_wall = sum(t["wall_time"] for t in traces) / trace_count
     avg_steps = len(all_steps) / trace_count
     avg_retries = sum(t["retries"] for t in traces) / trace_count
@@ -984,43 +1271,63 @@ def _summarize(traces: list[dict[str, Any]]) -> dict[str, Any]:
     model_rows = []
     for model, rows in model_groups.items():
         model_success = sum(1 for t in rows if t["success"]) / len(rows) * 100
-        model_retry_avg = sum(t["retries"] for t in rows) / len(rows)
-        reliability = max(0.0, min(100.0, 100.0 - (model_retry_avg * 15.0)))
+        msteps = [s for t in rows for s in t["steps"]]
+        m_total = len(msteps)
+        m_done = sum(1 for s in msteps if s.get("status") == "completed")
+        m_step_done_rate = (m_done / m_total) * 100.0 if m_total else 0.0
         model_rows.append(
             {
                 "model": model,
                 "success_rate": round(model_success, 1),
-                "reliability": round(reliability, 1),
+                "step_completion_rate": round(m_step_done_rate, 1),
             }
         )
 
-    # Trust index: weighted blend favoring outcomes and stability.
-    retry_penalty = min(25.0, avg_retries * 12.0)
-    latency_penalty = min(20.0, (p95 / 1000.0) * 8.0)
-    failure_penalty = min(35.0, (len(failure_counts) * 4.0))
-    trust_index = max(0.0, min(100.0, success_rate - retry_penalty - latency_penalty - failure_penalty + 25.0))
+    safety_fail_steps = sum(
+        failure_counts.get(k, 0) for k in _SAFETY_FAILURE_KEYS
+    )
+    safety_tagged_step_rate = (
+        (safety_fail_steps / total_step_count) * 100.0 if total_step_count else 0.0
+    )
+
+    def _fail_sort(t: tuple[str, int]) -> tuple[int, int, str]:
+        label, n = t
+        is_s = 1 if label in _SAFETY_FAILURE_KEYS else 0
+        return (is_s, n, label)
+
+    ordered_failures = sorted(failure_counts.items(), key=_fail_sort, reverse=True)
+
+    def _one_rec(failure: str, count: int) -> str:
+        if failure in _SAFETY_FAILURE_KEYS:
+            return (
+                f"[AI safety] Address '{failure}' ({count} steps): review policy, output filters, and grounding."
+            )
+        if failure == "tool_arg_schema_violation":
+            return f"Reduce schema errors ({count}) by adding stricter tool-call examples in executor prompt."
+        if failure == "tool_execution_failure":
+            return f"Address execution failures ({count}) with fallback paths and stronger retry guards."
+        if failure == "hallucinated_tool":
+            return f"Reduce hallucinated tools ({count}) by emphasizing allowed tools in planner/executor prompts."
+        if failure == "output_parse_error":
+            return f"Fix parse issues ({count}) with tighter JSON-output constraints and validation cues."
+        return f"Investigate recurring failure '{failure}' ({count}) to improve reliability."
 
     recommendations: list[str] = []
-    top_failures = sorted(failure_counts.items(), key=lambda x: x[1], reverse=True)
+    top_failures = sorted(ordered_failures, key=lambda x: x[1], reverse=True)
     for failure, count in top_failures[:3]:
-        if failure == "tool_arg_schema_violation":
-            recommendations.append(f"Reduce schema errors ({count}) by adding stricter tool-call examples in executor prompt.")
-        elif failure == "tool_execution_failure":
-            recommendations.append(f"Address execution failures ({count}) with fallback paths and stronger retry guards.")
-        elif failure == "hallucinated_tool":
-            recommendations.append(f"Reduce hallucinated tools ({count}) by emphasizing allowed tools in planner/executor prompts.")
-        elif failure == "output_parse_error":
-            recommendations.append(f"Fix parse issues ({count}) with tighter JSON-output constraints and validation cues.")
-        else:
-            recommendations.append(f"Investigate recurring failure '{failure}' ({count}) to improve reliability.")
+        recommendations.append(_one_rec(failure, count))
     if avg_retries > 0.8:
         recommendations.append("Retry volume is elevated; review correction quality and tighten stop/replan thresholds.")
     if rag_success_rate < 70 and rag_steps:
         recommendations.append("RAG success is low; evaluate chunking strategy and query formulation.")
+    if safety_fail_steps and not any("AI safety" in r for r in recommendations[:3]):
+        recommendations.insert(0, f"[AI safety] {safety_fail_steps} step(s) tagged with safety failure categories; audit prompts and allowlists first.")
 
     return {
         "trace_count": trace_count,
         "success_rate": success_rate,
+        "total_step_count": total_step_count,
+        "step_completion_rate": round(step_completion_rate, 1),
         "avg_wall_time": avg_wall,
         "avg_steps": avg_steps,
         "avg_retries": avg_retries,
@@ -1028,38 +1335,69 @@ def _summarize(traces: list[dict[str, Any]]) -> dict[str, Any]:
         "rag_success_rate": rag_success_rate,
         "rag_chunks_ingested": rag_chunks,
         "top_tools": sorted(tool_counts.items(), key=lambda x: x[1], reverse=True)[:8],
-        "failure_taxonomy": sorted(failure_counts.items(), key=lambda x: x[1], reverse=True)[:8],
+        "failure_taxonomy": ordered_failures[:12],
+        "safety_failure_steps": safety_fail_steps,
+        "safety_tagged_step_rate": round(safety_tagged_step_rate, 2),
         "model_comparison": model_rows,
         "status_distribution": sorted(status_counts.items(), key=lambda x: x[1], reverse=True),
         "verdict_distribution": sorted(verdict_counts.items(), key=lambda x: x[1], reverse=True),
         "p50_step_latency_ms": p50,
         "p95_step_latency_ms": p95,
-        "trust_index": trust_index,
         "recommendations": recommendations,
     }
 
 
-def _load_dashboard_data(traces_dir: Path, limit: int) -> TraceDashboardData:
-    traces: list[dict[str, Any]] = []
+def _load_dashboard_data(traces_dir: Path, list_limit: int) -> TraceDashboardData:
+    """Load dashboard data: KPIs/aggregates over the newest *metrics* window; `traces` is a sub-list for the UI.
+
+    - `?limit=` caps how many **newest** files appear in the `traces` array (and client table), max 2000.
+    - `ARCHON_DASHBOARD_METRICS_MAX` caps how many **newest** files are read to compute `summary` (default 10_000, max 100_000).
+    - When the disk has more files than the metrics cap, `meta.metrics_omit_older` is true: KPIs still reflect
+      the full metrics window, not the shorter table list.
+    """
+    raw_metrics = os.getenv("ARCHON_DASHBOARD_METRICS_MAX", "10000")
+    try:
+        metrics_max = int(raw_metrics)
+    except (TypeError, ValueError):
+        metrics_max = 10_000
+    metrics_max = max(1, min(metrics_max, 100_000))
+
     paths: list[Path] = []
     if traces_dir.exists():
         paths = sorted(traces_dir.glob("*.json"), reverse=True)
     total_on_disk = len(paths)
-    cap = max(1, min(int(limit), 2000))
-    for path in paths[:cap]:
+
+    paths_for_metrics = paths[:metrics_max]
+    for_metrics: list[dict[str, Any]] = []
+    for path in paths_for_metrics:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            traces.append(_normalize_trace(raw))
+            for_metrics.append(_normalize_trace(raw))
         except Exception:
             continue
+
+    summary = _summarize(for_metrics)
+    list_cap = max(1, min(int(list_limit), 2000))
+    traces = for_metrics[:list_cap]
+
     meta: dict[str, Any] = {
         "version": _package_version(),
         "traces_on_disk": total_on_disk,
         "traces_loaded": len(traces),
-        "limit": cap,
+        "traces_in_response": len(traces),
+        "limit": list_cap,
+        "list_limit": list_cap,
+        "metrics_files_read": len(for_metrics),
+        "metrics_file_cap": metrics_max,
+        "metrics_omit_older": total_on_disk > metrics_max,
         "server_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    return TraceDashboardData(traces=traces, summary=_summarize(traces), meta=meta)
+    if meta["metrics_omit_older"]:
+        meta["metrics_note"] = (
+            f"KPIs use the newest {metrics_max} of {total_on_disk} trace files on disk. "
+            "Set ARCHON_DASHBOARD_METRICS_MAX to include more files in aggregates."
+        )
+    return TraceDashboardData(traces=traces, summary=summary, meta=meta)
 
 
 def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
@@ -1270,6 +1608,19 @@ def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_svg(self, svg: str, code: int = 200) -> None:
+            rid = getattr(self, "_request_id", None) or self._ensure_request_id()
+            body = svg.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "image/svg+xml; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("X-Request-Id", rid)
+            self._common_security_headers()
+            self._cors_headers()
+            self.end_headers()
+            self.wfile.write(body)
+
         def send_response(self, code: int, message: str | None = None) -> None:  # noqa: N802
             self._response_begun = True
             self._response_status = int(code)
@@ -1320,6 +1671,12 @@ def serve_dashboard(host: str, port: int, traces_dir: Path) -> None:
                                 "checks": _readiness_check(traces_dir),
                             }
                         )
+                        return
+                    if parsed.path == "/api/info":
+                        self._send_json(_api_info_payload(traces_dir))
+                        return
+                    if parsed.path == "/favicon.svg":
+                        self._send_svg(FAVICON_SVG)
                         return
                     if parsed.path.startswith("/api/rag/") and not self._check_rag_rate():
                         return
