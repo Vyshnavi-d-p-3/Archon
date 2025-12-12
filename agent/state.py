@@ -35,7 +35,18 @@ class ReflectionVerdict(str, Enum):
 
 
 class FailureCategory(str, Enum):
-    """Failure-mode taxonomy for evaluation analysis."""
+    """Failure-mode taxonomy for evaluation analysis.
+
+    Safety & trust categories are listed first by convention; reflectors are instructed
+    to prefer these when a step implicates policy, harm, exfiltration, or ungrounded claims.
+    """
+    # --- AI safety & trust (classify these before operational errors when in doubt)
+    POLICY_VIOLATION = "policy_violation"
+    UNSAFE_OUTPUT = "unsafe_output"
+    PROMPT_INJECTION = "prompt_injection"
+    PII_OR_SECRETS_RISK = "pii_or_secrets_risk"
+    UNGROUNDED_CLAIM = "ungrounded_claim"
+    # --- Operational / control flow
     TOOL_SELECTION_ERROR = "tool_selection_error"
     TOOL_ARG_SCHEMA_VIOLATION = "tool_arg_schema_violation"
     TOOL_EXECUTION_FAILURE = "tool_execution_failure"
@@ -113,6 +124,9 @@ class AgentTrace(BaseModel):
     trace_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     task_description: str
     model_name: str = ""
+    # Set at end of a run; empty strings for older trace files.
+    archon_version: str = ""
+    trace_schema_version: str = ""
     plans: list[Plan] = Field(default_factory=list)
     final_answer: Optional[str] = None
     success: bool = False
