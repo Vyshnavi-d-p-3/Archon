@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/citation-file-format/citation-file-format/main/schema.json
+cff-version: 1.2.0
+title: "Archon — Autonomous agent with planner-executor-reflector architecture and LLM evaluation harness"
+message: "If you use this software, please cite it using these metadata."
+type: software
+version: 0.2.0
+date-released: 2026-04-26
+license: MIT
+authors:
+  - family-names: "Contributors"
+    affiliation: "Archon project"
+
+keywords:
+  - "autonomous agents"
+  - "tool use"
+  - "LLM evaluation"
+  - "planner-executor"
+  - "reflection"
+
+abstract: >
+  Archon is a Python agent with planner, executor, and reflector components,
+  schema-validated tool calls, middleware for tracing and budgets, and a
+  statistically documented evaluation harness (bootstrap CI, effect sizes, non-parametric tests).
