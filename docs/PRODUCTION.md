@@ -9,6 +9,7 @@ This document closes common gaps between the built-in `ThreadingHTTPServer` dash
 - **Sliding-window rate limiting** for RAG routes (per process, keyed by client IP; honor `X-Forwarded-For` from your edge proxy).
 - **Durable JSONL** append to `<traces-dir>/rag_store/ingests.jsonl` with POSIX `flock` on append (good for a single node; not a distributed store).
 - **`GET /api/health`** for **liveness** (process up; includes version, RAG limiter configuration, and filesystem `checks`).
+- **`GET /api/info`** for **service discovery** (version, `traces_dir`, and documented HTTP entry points; safe to cache briefly).
 - **`GET /api/ready`** for **readiness** — **200** when `traces/` and `rag_store/` are writable, **503** otherwise (use for Kubernetes `readinessProbe`).
 - **SIGTERM** triggers a graceful `server.shutdown()` (with **SIGINT** still stopping the process as before).
 - **Optional CORS** via `ARCHON_CORS_ORIGIN` for browser clients on another origin (lock down to a single origin in production).
@@ -35,6 +36,7 @@ This document closes common gaps between the built-in `ThreadingHTTPServer` dash
 | `ARCHON_AUDIT_JSON` | `1` (default) enables one JSON audit line per request; `0` disables. |
 | `ARCHON_CORS_ORIGIN` | If set, enables CORS for `/api/*` and `OPTIONS` preflight. Prefer one explicit origin. |
 | `ARCHON_CORS_MAX_AGE` | Preflight `Access-Control-Max-Age` (default `86400`). |
+| `ARCHON_DASHBOARD_METRICS_MAX` | Cap on **newest** trace JSON files read for `summary` KPIs (default `10000`, max `100000`). The HTTP `?limit=` still only caps the `traces` list. |
 
 ## RAG data model (current)
 

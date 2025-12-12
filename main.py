@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import json
 import sys
+import tomllib
 from pathlib import Path
 
 import structlog
@@ -29,6 +30,23 @@ structlog.configure(
 )
 
 logger = structlog.get_logger(__name__)
+
+
+def _cli_version() -> str:
+    try:
+        from config.version import package_version
+
+        v = package_version()
+        if v != "0.0.0+dev":
+            return v
+    except Exception:
+        pass
+    try:
+        root = Path(__file__).resolve().parent
+        data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+        return str((data.get("project") or {}).get("version", "0.0.0"))
+    except Exception:
+        return "unknown"
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -74,12 +92,17 @@ def cmd_eval(args: argparse.Namespace) -> None:
             models.append({"provider": args.provider, "model": m})
     else:
         models = [
-            {"provider": "huggingface", "model": "meta-llama/Meta-Llama-3-8B-Instruct"},
-            {"provider": "huggingface", "model": "mistralai/Mistral-7B-Instruct-v0.3"},
+            {"provider": "huggingface", "model": m} for m in config.evaluation.models_to_compare
         ]
 
     harness = EvaluationHarness(config=config)
-    harness.run_evaluation(models=models, num_trials=args.trials, use_mock_tools=args.mock)
+    harness.run_evaluation(
+        models=models,
+        num_trials=args.trials,
+        use_mock_tools=args.mock,
+        include_extended_tasks=args.include_extended_benchmarks,
+        run_seed=args.seed,
+    )
     report = harness.generate_report(
         output_path=args.report_output or "evaluation/results/report.txt"
     )
@@ -184,7 +207,19 @@ def cmd_demo(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Archon")
+    if len(sys.argv) == 2 and sys.argv[1] in ("-V", "--version"):
+        print(_cli_version())
+        return
+
+    parser = argparse.ArgumentParser(
+        description="Archon — planner–executor–reflector agent, evaluation harness, and ops dashboard.",
+        epilog="Examples:\n  %(prog)s run \"Summarize this\" --trace-output traces/run.json\n"
+        "  %(prog)s dashboard --host 127.0.0.1 --port 8787 --traces-dir traces\n"
+        "  %(prog)s demo\n  %(prog)s eval --mock --trials 1\n"
+        "  %(prog)s eval --mock --seed 42   # + run_manifest.json / reproducible NumPy\n\n"
+        "Version: %(prog)s -V  or  %(prog)s --version",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     subs = parser.add_subparsers(dest="command")
 
     run_p = subs.add_parser("run")
@@ -198,6 +233,17 @@ def main() -> None:
     eval_p.add_argument("--provider", default="huggingface")
     eval_p.add_argument("--models", nargs="+")
     eval_p.add_argument("--trials", type=int, default=3)
+    eval_p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="RNG seed for Python/NumPy (bootstrap etc.); default from ARCHON_EVAL_SEED or 42.",
+    )
+    eval_p.add_argument(
+        "--include-extended-benchmarks",
+        action="store_true",
+        help="Add extended task suite (longer runs) when you do not pass a custom task list.",
+    )
     eval_p.add_argument("--mock", action="store_true")
     eval_p.add_argument("--report-output", type=str)
     eval_p.add_argument("--json-output", type=str)
