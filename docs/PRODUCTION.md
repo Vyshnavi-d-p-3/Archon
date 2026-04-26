@@ -46,22 +46,24 @@ This document closes common gaps between the built-in `ThreadingHTTPServer` dash
 ## Suggested `Dockerfile` / Kubernetes
 
 - **Health check**: `GET /api/health` (expect 200, JSON with `"status": "ok"`).
-- **Command**: `python main.py dashboard --host 0.0.0.0 --port 8787 --traces-dir /tmp/traces` for managed platforms like Render (container-writable temp dir). Use a mounted volume path only when your platform provides one.
+- **Command**: `python main.py dashboard --host 0.0.0.0 --port 8787 --traces-dir /var/data/traces` with a mounted persistent volume/disk.
 - **User**: Run as **non-root** (image already uses `agent` in the default `Dockerfile`).
 - **CD workflow**: pushes to `production` build/push a GHCR image via [`.github/workflows/cd.yml`](../.github/workflows/cd.yml). For Render, set repository secret `RENDER_DEPLOY_HOOK_URL` (from your Render service) to auto-trigger deploys after image publish.
 
 ## Render deployment (recommended)
 
-Use [render.yaml](../render.yaml) as the blueprint baseline (service type, health check, env defaults, and Docker start command).
+Use [render.yaml](../render.yaml) as the blueprint baseline (service type, persistent disk mount, health check, env defaults, and Docker start command).
 
 1. Create a **Web Service** in Render from this repository (Docker environment).
-2. Set start command:
-   - `python main.py dashboard --host 0.0.0.0 --port $PORT --traces-dir /tmp/traces`
-3. Configure health check path:
+2. Add a persistent disk:
+   - mount path: `/var/data` (Render disk)
+3. Set start command:
+   - `python main.py dashboard --host 0.0.0.0 --port $PORT --traces-dir /var/data/traces`
+4. Configure health check path:
    - `/api/health`
-4. In GitHub repo secrets, add:
+5. In GitHub repo secrets, add:
    - `RENDER_DEPLOY_HOOK_URL` = Render Deploy Hook URL (Render Dashboard → Settings → Deploy Hook)
-5. Merge/push to `production`:
+6. Merge/push to `production`:
    - CD publishes GHCR image and triggers Render deploy hook automatically.
 
 Quick UI path (no guesswork):

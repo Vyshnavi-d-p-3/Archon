@@ -184,13 +184,15 @@ Run `pytest tests/ -q` — the suite is **180+** tests (registry, state, metrics
 
 1. In Render, create a **Web Service** from this repository with **Docker** environment.
    - Tip: Render can import [`render.yaml`](render.yaml) to prefill most settings.
-2. Set start command:
-   - `python main.py dashboard --host 0.0.0.0 --port $PORT --traces-dir /tmp/traces`
-3. Set health check path:
+2. Add a persistent disk in Render:
+   - mount path: `/var/data` (1GB is enough to start)
+3. Set start command:
+   - `python main.py dashboard --host 0.0.0.0 --port $PORT --traces-dir /var/data/traces`
+4. Set health check path:
    - `/api/health`
-4. In GitHub repo secrets, add:
+5. In GitHub repo secrets, add:
    - `RENDER_DEPLOY_HOOK_URL` = your Render Deploy Hook URL.
-5. Push or merge to `production`:
+6. Push or merge to `production`:
    - GitHub Actions CD builds/pushes the image and triggers Render deploy.
 
 Import Blueprint in Render (click path):
@@ -198,7 +200,7 @@ Import Blueprint in Render (click path):
 1. Render Dashboard → **New** → **Blueprint**
 2. Select this GitHub repository (`Archon`)
 3. Confirm Render detected `render.yaml`
-4. Review service name/plan (`archon-dashboard`, free)
+4. Review service settings (`archon-dashboard`, persistent disk `/var/data`)
 5. Click **Apply**
 6. Open created service → **Settings** → copy **Deploy Hook**
 7. GitHub → repo **Settings** → **Secrets and variables** → **Actions** → add `RENDER_DEPLOY_HOOK_URL`
