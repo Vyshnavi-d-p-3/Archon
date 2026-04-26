@@ -52,6 +52,8 @@ This document closes common gaps between the built-in `ThreadingHTTPServer` dash
 
 ## Render deployment (recommended)
 
+Use [render.yaml](../render.yaml) as the blueprint baseline (service type, health check, env defaults, and Docker start command).
+
 1. Create a **Web Service** in Render from this repository (Docker environment).
 2. Set start command:
    - `python main.py dashboard --host 0.0.0.0 --port $PORT --traces-dir /data/traces`

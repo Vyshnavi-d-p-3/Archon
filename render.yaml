@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: archon-dashboard
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    dockerCommand: python main.py dashboard --host 0.0.0.0 --port $PORT --traces-dir /data/traces
+    healthCheckPath: /api/health
+    envVars:
+      - key: ARCHON_LOG_LEVEL
+        value: INFO
+      - key: ARCHON_AUDIT_JSON
+        value: "1"
+      - key: ARCHON_RAG_RATE_MAX
+        value: "120"
+      - key: ARCHON_RAG_RATE_WINDOW_SEC
+        value: "60"
+      - key: ARCHON_RAG_MAX_REQUEST_BYTES
+        value: "200000"
+      - key: ARCHON_RAG_MAX_INGEST_CHARS
+        value: "50000"
+      - key: ARCHON_DASHBOARD_METRICS_MAX
+        value: "10000"
+      # Optional hardening; set in Render dashboard or override here.
+      # - key: ARCHON_DASHBOARD_TOKEN
+      #   sync: false
+      # - key: ARCHON_CORS_ORIGIN
+      #   value: https://your-frontend-domain.com
