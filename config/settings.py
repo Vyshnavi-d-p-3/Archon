@@ -64,20 +64,27 @@ class ReflectorConfig:
     max_consecutive_failures: int = 3
 
 
+def _default_eval_models() -> list[str]:
+    """Hugging Face model ids used by ``python main.py eval`` (provider ``huggingface``)."""
+    return [
+        "meta-llama/Meta-Llama-3-8B-Instruct",
+        "meta-llama/Meta-Llama-3.1-8B-Instruct",
+        "meta-llama/Llama-3.2-3B-Instruct",
+        "mistralai/Mistral-7B-Instruct-v0.3",
+        "Qwen/Qwen2.5-7B-Instruct",
+        "Qwen/Qwen2.5-14B-Instruct",
+        "google/gemma-2-9b-it",
+        "google/gemma-2-2b-it",
+        "microsoft/Phi-3.5-mini-instruct",
+    ]
+
+
 @dataclass(frozen=True)
 class EvalConfig:
     """Evaluation harness configuration."""
     benchmark_dir: str = "evaluation/benchmarks"
     output_dir: str = "evaluation/results"
-    models_to_compare: list[str] = field(
-        default_factory=lambda: [
-            "meta-llama/Meta-Llama-3-8B-Instruct",
-            "meta-llama/Llama-3.2-3B-Instruct",
-            "mistralai/Mistral-7B-Instruct-v0.3",
-            "Qwen/Qwen2.5-7B-Instruct",
-            "google/gemma-2-9b-it",
-        ]
-    )
+    models_to_compare: list[str] = field(default_factory=_default_eval_models)
     num_trials: int = 3
     compute_confidence_intervals: bool = True
 
@@ -96,11 +103,18 @@ class AgentConfig:
     @classmethod
     def from_env(cls) -> "AgentConfig":
         """Build config from environment variables with sensible defaults."""
+        eval_models = os.getenv("ARCHON_EVAL_MODELS", "").strip()
+        if eval_models:
+            models = [m.strip() for m in eval_models.split(",") if m.strip()]
+            evaluation = EvalConfig(models_to_compare=models) if models else EvalConfig()
+        else:
+            evaluation = EvalConfig()
         return cls(
             llm=LLMConfig(
                 provider=LLMProvider(os.getenv("AGENT_LLM_PROVIDER", "openai")),
                 model_name=os.getenv("AGENT_LLM_MODEL", "gpt-4o-mini"),
                 temperature=float(os.getenv("AGENT_LLM_TEMP", "0.0")),
             ),
+            evaluation=evaluation,
             verbose=os.getenv("AGENT_VERBOSE", "true").lower() == "true",
         )
