@@ -32,6 +32,38 @@ The small activity graph on your profile and repo list is driven by **commits on
 
 **Changing the default branch** (e.g. to `develop`) is under **Settings → General → Default branch** on GitHub. The sparkline for that repository follows the **default** branch you set.
 
+### Still no graph? Checklist
+
+**A. Profile: green “contributions” calendar**
+
+1. **Author email must be on your GitHub account** — The email in each commit’s **Author** field must be listed under [GitHub → Settings → Emails](https://github.com/settings/emails) (and verified, if GitHub required it). Check locally:
+   ```bash
+   git log -1 --format='%ae  %an'   # should match a verified address (or your GitHub noreply).
+   ```
+   To use GitHub’s private address: `USERNAME@users.noreply.github.com` (see **Settings → Emails** — GitHub shows the exact value).
+
+2. **Backdated or rewritten history** — If you used tools that set **author dates** in the **past** (e.g. all commits dated in 2025), those contributions appear on **that year’s** calendar, not the current year. Open your profile’s contribution graph and **go back a year** (or the year of your commit dates) to see squares.
+
+3. **Current year looks empty** — You need at least one **new** commit, authored **this year** with a **valid email**, and pushed to the **default branch** of a **non-fork** repo (or a merged PR) for squares to show in the **current** year. Make a small doc or chore commit, push to `main`, wait up to **24 hours**.
+
+4. **Private contributions** — Under [Profile → Settings](https://github.com/settings/profile), enable **“Include private contributions on my profile”** if the repo is private and you want them counted.
+
+5. **Forks** — Commits on a **fork** do not add to your profile until they are **merged** into the parent (or in some cases the default rules — see [GitHub’s help](https://docs.github.com/en/account-and-profile/setting-up-and-managing-your-github-profile/managing-contribution-graphs-on-your-profile/why-are-my-contributions-not-showing-up-on-my-profile)).
+
+**B. Repo list: small “activity” line next to the repo name**
+
+- Tied to the **default branch**; can lag **several hours** after pushes.
+- **One huge push in a single day** can look like a very **flat** line until you have more days of pushes.
+- If you **rebased / force-pushed** the whole history recently, the UI can take time to catch up.
+
+**C. Quick test**
+
+```bash
+git config user.name "Your Name"
+git config user.email "YOUR_VERIFIED_EMAIL_OR_NOREPLY"
+# tiny commit on main, push — then recheck the graph after a day
+```
+
 ## One-time setup: create and publish branches (local)
 
 From a clean `main`:
