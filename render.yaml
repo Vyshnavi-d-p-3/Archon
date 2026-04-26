@@ -2,14 +2,10 @@ services:
   - type: web
     name: archon-dashboard
     runtime: docker
-    plan: starter
+    plan: free
     autoDeploy: true
-    dockerCommand: python main.py dashboard --host 0.0.0.0 --port $PORT --traces-dir /var/data/traces
+    dockerCommand: python main.py dashboard --host 0.0.0.0 --port $PORT --traces-dir /tmp/traces
     healthCheckPath: /api/health
-    disk:
-      name: archon-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: ARCHON_LOG_LEVEL
         value: INFO
