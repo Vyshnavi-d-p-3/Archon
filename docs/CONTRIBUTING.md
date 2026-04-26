@@ -1,6 +1,7 @@
 # Contributing
 
 - **Branching** — See [docs/BRANCHES.md](BRANCHES.md) for `main`, `develop`, `production`, and `feature/*`.
+- **Human-led engineering policy** — This repository is **human-led with AI assistance**. Humans make architectural decisions, review all generated changes, and remain accountable for correctness and maintainability. AI may accelerate drafting/refactoring, but must not drive direction unsupervised.
 - **Own the diff.** Whether you wrote it by hand, refactored with a copilot, or mixed both, you are responsible for tests, style, and review feedback. No “the model did it” as an excuse in review.
 - **Keep changes reviewable** — scope work in **branches and pull requests**: one main concern per PR (or a clearly split series) so the diff and discussion stay focused. Local commits are for your workflow; use rebase, fixups, or squash as needed so **merged history** on the default branch stays easy to follow.
 - **Run tests** before you open or update a PR: `pytest tests/ -q` (or `make check` if the Makefile defines it).
