@@ -18,8 +18,6 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-import structlog
-
 from agent.state import (
     AgentTrace,
     FailureCategory,
@@ -28,8 +26,6 @@ from agent.state import (
     StepStatus,
 )
 from evaluation.benchmarks.tasks import BenchmarkTask, ExpectedStep
-
-logger = structlog.get_logger(__name__)
 
 
 # ── Per-step metrics ─────────────────────────────────────────────────
