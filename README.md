@@ -180,6 +180,33 @@ Run `pytest tests/ -q` — the suite is **180+** tests (registry, state, metrics
   - builds and pushes Docker image tags to GHCR: `ghcr.io/<owner>/<repo>:production` and `:sha-<commit>`
   - optionally triggers Render deployment if repository secret `RENDER_DEPLOY_HOOK_URL` is set
 
+## Deploy to Render (2 minutes)
+
+1. In Render, create a **Web Service** from this repository with **Docker** environment.
+2. Set start command:
+   - `python main.py dashboard --host 0.0.0.0 --port $PORT --traces-dir /data/traces`
+3. Set health check path:
+   - `/api/health`
+4. In GitHub repo secrets, add:
+   - `RENDER_DEPLOY_HOOK_URL` = your Render Deploy Hook URL.
+5. Push or merge to `production`:
+   - GitHub Actions CD builds/pushes the image and triggers Render deploy.
+
+Recommended Render environment variables:
+
+- `ARCHON_LOG_LEVEL=INFO`
+- `ARCHON_AUDIT_JSON=1`
+- `ARCHON_RAG_RATE_MAX=120`
+- `ARCHON_RAG_RATE_WINDOW_SEC=60`
+- `ARCHON_RAG_MAX_REQUEST_BYTES=200000`
+- `ARCHON_RAG_MAX_INGEST_CHARS=50000`
+- `ARCHON_DASHBOARD_METRICS_MAX=10000`
+
+Optional hardening:
+
+- `ARCHON_DASHBOARD_TOKEN=<long-random-secret>` (protect `/api/rag/*`)
+- `ARCHON_CORS_ORIGIN=https://your-frontend-domain.com` (if frontend is on another origin)
+
 ## Evaluation Metrics
 
 | Metric | Description |
