@@ -48,7 +48,19 @@ This document closes common gaps between the built-in `ThreadingHTTPServer` dash
 - **Health check**: `GET /api/health` (expect 200, JSON with `"status": "ok"`).
 - **Command**: `python main.py dashboard --host 0.0.0.0 --port 8787 --traces-dir /data/traces` with a **volume** for traces and RAG store.
 - **User**: Run as **non-root** (image already uses `agent` in the default `Dockerfile`).
-- **CD workflow**: pushes to `production` build/push a GHCR image via [`.github/workflows/cd.yml`](../.github/workflows/cd.yml). Optionally set repository secret `DEPLOY_WEBHOOK_URL` to notify your deployment platform.
+- **CD workflow**: pushes to `production` build/push a GHCR image via [`.github/workflows/cd.yml`](../.github/workflows/cd.yml). For Render, set repository secret `RENDER_DEPLOY_HOOK_URL` (from your Render service) to auto-trigger deploys after image publish.
+
+## Render deployment (recommended)
+
+1. Create a **Web Service** in Render from this repository (Docker environment).
+2. Set start command:
+   - `python main.py dashboard --host 0.0.0.0 --port $PORT --traces-dir /data/traces`
+3. Configure health check path:
+   - `/api/health`
+4. In GitHub repo secrets, add:
+   - `RENDER_DEPLOY_HOOK_URL` = Render Deploy Hook URL (Render Dashboard → Settings → Deploy Hook)
+5. Merge/push to `production`:
+   - CD publishes GHCR image and triggers Render deploy hook automatically.
 
 ## Remaining product gaps (optional roadmap)
 
