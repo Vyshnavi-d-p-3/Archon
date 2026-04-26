@@ -193,6 +193,17 @@ Run `pytest tests/ -q` — the suite is **180+** tests (registry, state, metrics
 5. Push or merge to `production`:
    - GitHub Actions CD builds/pushes the image and triggers Render deploy.
 
+Import Blueprint in Render (click path):
+
+1. Render Dashboard → **New** → **Blueprint**
+2. Select this GitHub repository (`Archon`)
+3. Confirm Render detected `render.yaml`
+4. Review service name/plan (`archon-dashboard`, free)
+5. Click **Apply**
+6. Open created service → **Settings** → copy **Deploy Hook**
+7. GitHub → repo **Settings** → **Secrets and variables** → **Actions** → add `RENDER_DEPLOY_HOOK_URL`
+8. Push to `production` branch and watch GitHub Actions `CD` + Render deploy logs
+
 Recommended Render environment variables:
 
 - `ARCHON_LOG_LEVEL=INFO`

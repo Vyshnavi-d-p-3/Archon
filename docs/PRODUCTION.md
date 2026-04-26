@@ -64,6 +64,17 @@ Use [render.yaml](../render.yaml) as the blueprint baseline (service type, healt
 5. Merge/push to `production`:
    - CD publishes GHCR image and triggers Render deploy hook automatically.
 
+Quick UI path (no guesswork):
+
+1. Render → **New** → **Blueprint**
+2. Choose GitHub repo → Render reads `render.yaml`
+3. Click **Apply** to create `archon-dashboard`
+4. Render service → **Settings** → **Deploy Hook** (copy URL)
+5. GitHub repo → **Settings** → **Secrets and variables** → **Actions** → add `RENDER_DEPLOY_HOOK_URL`
+6. Push to `production` and verify:
+   - GitHub Actions: `CD / docker-release` and `CD / deploy-render`
+   - Render: latest deploy started by deploy hook
+
 ## Remaining product gaps (optional roadmap)
 
 - **Log shipping** — forward `archon.audit` / process stdout to your SIEM; add alerts on 401/429 spikes or health check failures.
