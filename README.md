@@ -173,6 +173,13 @@ archon/
 
 Run `pytest tests/ -q` — the suite is **180+** tests (registry, state, metrics, config, async agent, statistics, RAG, dashboard, reproducibility). Prefer **deterministic fakes** over mocks; integration tests with live APIs are opt-in.
 
+## CI/CD
+
+- **CI** — [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs tests on pushes/PRs to `main`, `develop`, and `production`.
+- **CD** — [`.github/workflows/cd.yml`](.github/workflows/cd.yml) runs on pushes to `production`:
+  - builds and pushes Docker image tags to GHCR: `ghcr.io/<owner>/<repo>:production` and `:sha-<commit>`
+  - optionally calls `DEPLOY_WEBHOOK_URL` (if configured in repository secrets) with the image + commit SHA payload
+
 ## Evaluation Metrics
 
 | Metric | Description |

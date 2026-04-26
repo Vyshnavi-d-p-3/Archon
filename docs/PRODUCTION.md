@@ -48,6 +48,7 @@ This document closes common gaps between the built-in `ThreadingHTTPServer` dash
 - **Health check**: `GET /api/health` (expect 200, JSON with `"status": "ok"`).
 - **Command**: `python main.py dashboard --host 0.0.0.0 --port 8787 --traces-dir /data/traces` with a **volume** for traces and RAG store.
 - **User**: Run as **non-root** (image already uses `agent` in the default `Dockerfile`).
+- **CD workflow**: pushes to `production` build/push a GHCR image via [`.github/workflows/cd.yml`](../.github/workflows/cd.yml). Optionally set repository secret `DEPLOY_WEBHOOK_URL` to notify your deployment platform.
 
 ## Remaining product gaps (optional roadmap)
 
