@@ -81,6 +81,7 @@ python main.py eval --mock --trials 1 --seed 42
 
 ## Research, reproducibility, and citation
 
+- **[docs/BRANCHES.md](docs/BRANCHES.md)** — `main`, `develop`, `production`, and `feature/*` workflow, plus how GitHub’s activity graph / sparkline relates to the default branch and commit email.
 - **[docs/RESEARCH.md](docs/RESEARCH.md)** — definitions of metrics, statistical methods, limitations, and what is (and is not) controlled by the evaluation seed. Use it as a template for a paper **Methods** / **Reproducibility** section.
 - **Run manifest** — each `eval` run writes `evaluation/results/run_manifest.json` (archon version, `trace_schema_version`, `eval_seed`, task IDs, model list, SHA-256 **config fingerprint**). Aggregated `results.json` may embed the same under `__archon_run__`.
 - **Traces** — completed runs attach **`archon_version`** and **`trace_schema_version`** to `AgentTrace` JSON for interchange and long-term analysis.
@@ -89,6 +90,7 @@ python main.py eval --mock --trials 1 --seed 42
 | Variable / CLI | Purpose |
 |----------------|---------|
 | `ARCHON_EVAL_SEED` | Default RNG seed for Python/NumPy in the eval harness (default `42`). |
+| `ARCHON_EVAL_MODELS` | Comma-separated Hugging Face model ids for `main.py eval` (overrides the default list in `config.settings.EvalConfig`). |
 | `--seed` | Per-invocation override for the eval harness. |
 | `--include-extended-benchmarks` | Use core + [extended](evaluation/benchmarks/extended_tasks.py) tasks (longer / heavier than the default baseline). |
 

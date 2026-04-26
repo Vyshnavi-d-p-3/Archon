@@ -12,3 +12,5 @@ venv/
 .coverage
 htmlcov/
 traces/rag_store/
+# Local eval harness output (reproducible via main.py eval)
+evaluation/results/

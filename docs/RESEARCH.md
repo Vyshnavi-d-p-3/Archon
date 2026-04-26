@@ -41,6 +41,7 @@ Implemented in `evaluation/statistics.py` and summarized in the main [README](..
 ## 5. Reproducibility and what “seed” does
 
 - **`ARCHON_EVAL_SEED` / `--seed`** — Sets **Python `random`** and **NumPy** seeds at the start of a harness run so bootstrap resampling and any numpy-backed stats are **repeatable** for a fixed codebase version.
+- **`ARCHON_EVAL_MODELS`** — Comma-separated Hugging Face model ids; if set, replaces the default `models_to_compare` list for `main.py eval` (see `config.settings`).
 - **Remote LLM APIs** (OpenAI, Hugging Face Inference, etc.) are **not** bit-reproducible at temperature 0 in the general case; the run manifest’s `non_determinism_note` records this. For **deterministic** integration tests, use **mock tools** and **`DeterministicFakeBackend`**.
 - **Artifacts:** each eval run writes `evaluation/results/run_manifest.json` (or under `EvalConfig.output_dir`) with `archon_version`, `trace_schema_version`, `eval_seed`, `task_ids`, `models`, and a **config fingerprint** (SHA-256 of canonicalized knobs). `results.json` may embed the same data under the key `__archon_run__`.
 
