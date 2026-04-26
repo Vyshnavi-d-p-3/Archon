@@ -58,8 +58,10 @@ An autonomous agent built in Python with a **planner–executor–reflector** ar
 ## Quick Start
 
 ```bash
-# Install
+# Install (tests / demo: dev only; agent + eval also need LangChain)
 pip install -e ".[dev]"
+# For `python main.py run` and `python main.py eval` add extras, e.g.:
+# pip install -e ".[langchain,eval]"   # or pip install -e ".[all]"
 
 # Architecture demo (no API keys)
 python main.py demo
