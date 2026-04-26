@@ -48,3 +48,5 @@ git push -u origin develop production
 ```
 
 Keep `develop` and `production` current by merging or fast-forwarding from `main` when you are ready, or set branch protection in GitHub for `main` / `production` as needed.
+
+**CI** — [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs `pytest` on **push and pull request** to `main`, `develop`, and `production` (Python 3.11 and 3.12).

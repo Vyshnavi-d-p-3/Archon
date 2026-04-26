@@ -155,7 +155,7 @@ archon/
 │   ├── statistics.py         # Bootstrap CI, Cohen's d, Mann-Whitney U
 │   ├── reproducibility.py  # Run manifests, eval seed, trace schema version
 │   └── harness.py            # Multi-model evaluation runner
-├── tests/                    # See pytest (170+); repro + dashboard + RAG + stats
+├── tests/                    # See pytest (180+); repro + dashboard + RAG + stats
 ├── config/
 │   ├── settings.py           # Centralized config with env-var support
 │   └── version.py            # package_version(), TRACE_SCHEMA_VERSION
@@ -171,7 +171,7 @@ archon/
 
 ## Test coverage
 
-Run `pytest tests/ -q` — on the main branch the suite is **170+** tests (registry, state, metrics, async agent, statistics, RAG, dashboard, reproducibility). Prefer **deterministic fakes** over mocks; integration tests with live APIs are opt-in.
+Run `pytest tests/ -q` — the suite is **180+** tests (registry, state, metrics, config, async agent, statistics, RAG, dashboard, reproducibility). Prefer **deterministic fakes** over mocks; integration tests with live APIs are opt-in.
 
 ## Evaluation Metrics
 
