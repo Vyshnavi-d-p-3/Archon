@@ -185,7 +185,7 @@ Run `pytest tests/ -q` — the suite is **180+** tests (registry, state, metrics
 1. In Render, create a **Web Service** from this repository with **Docker** environment.
    - Tip: Render can import [`render.yaml`](render.yaml) to prefill most settings.
 2. Set start command:
-   - `python main.py dashboard --host 0.0.0.0 --port $PORT --traces-dir /data/traces`
+   - `python main.py dashboard --host 0.0.0.0 --port $PORT --traces-dir /tmp/traces`
 3. Set health check path:
    - `/api/health`
 4. In GitHub repo secrets, add:
